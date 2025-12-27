@@ -1,0 +1,40 @@
+﻿components/FabricCanvas.tsx(181,49): error TS2345: Argument of type 'number[]' is not assignable to parameter of type 'TMat2D'.
+  Target requires 6 element(s) but source may have fewer.
+components/FabricCanvas.tsx(381,32): error TS2345: Argument of type '{ x: number; y: number; }' is not assignable to parameter of type 'Point'.
+  Type '{ x: number; y: number; }' is missing the following properties from type 'Point': add, addEquals, scalarAdd, scalarAddEquals, and 28 more.
+components/FabricCanvas.tsx(482,19): error TS2345: Argument of type '"mousedblclick"' is not assignable to parameter of type 'keyof CanvasEvents'.
+components/FabricCanvas.tsx(689,40): error TS2345: Argument of type '() => Promise<void> | Promise<fabric.Path<Partial<fabric.PathProps>, fabric.SerializedPathProps, fabric.ObjectEvents>[]>' is not assignable to parameter of type '((value: FabricImage<Partial<ImageProps>, SerializedImageProps, ObjectEvents>) => void | PromiseLike<void>) & ((value: void) => void | PromiseLike<...>)'.
+  Type '() => Promise<void> | Promise<fabric.Path<Partial<fabric.PathProps>, fabric.SerializedPathProps, fabric.ObjectEvents>[]>' is not assignable to type '(value: FabricImage<Partial<ImageProps>, SerializedImageProps, ObjectEvents>) => void | PromiseLike<void>'.
+    Type 'Promise<void> | Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'void | PromiseLike<void>'.
+      Type 'Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'void | PromiseLike<void>'.
+        Type 'Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'PromiseLike<void>'.
+          Types of property 'then' are incompatible.
+            Type '<TResult1 = Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[], TResult2 = never>(onfulfilled?: (value: Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]) => TResult1 | PromiseLike<...>, onrejected?: (reason: any) => TResult2 | PromiseLike<...>) => Promise<...>' is not assignable to type '<TResult1 = void, TResult2 = never>(onfulfilled?: (value: void) => TResult1 | PromiseLike<TResult1>, onrejected?: (reason: any) => TResult2 | PromiseLike<TResult2>) => PromiseLike<...>'.
+              Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+                Types of parameters 'value' and 'value' are incompatible.
+                  Type 'Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]' is not assignable to type 'void'.
+components/FabricCanvas.tsx(815,63): error TS2345: Argument of type '(newImg: FabricImage<Partial<ImageProps>, SerializedImageProps, ObjectEvents>) => Promise<void> | Promise<...>' is not assignable to parameter of type '(value: FabricImage<Partial<ImageProps>, SerializedImageProps, ObjectEvents>) => void | PromiseLike<void>'.
+  Type 'Promise<void> | Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'void | PromiseLike<void>'.
+    Type 'Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'void | PromiseLike<void>'.
+      Type 'Promise<Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]>' is not assignable to type 'PromiseLike<void>'.
+        Types of property 'then' are incompatible.
+          Type '<TResult1 = Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[], TResult2 = never>(onfulfilled?: (value: Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]) => TResult1 | PromiseLike<...>, onrejected?: (reason: any) => TResult2 | PromiseLike<...>) => Promise<...>' is not assignable to type '<TResult1 = void, TResult2 = never>(onfulfilled?: (value: void) => TResult1 | PromiseLike<TResult1>, onrejected?: (reason: any) => TResult2 | PromiseLike<TResult2>) => PromiseLike<...>'.
+            Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+              Types of parameters 'value' and 'value' are incompatible.
+                Type 'Path<Partial<PathProps>, SerializedPathProps, ObjectEvents>[]' is not assignable to type 'void'.
+components/LayerEditorModal.tsx(183,16): error TS2304: Cannot find name 'HistoryState'.
+components/LayerEditorModal.tsx(206,30): error TS2304: Cannot find name 'HistoryState'.
+components/LayerEditorModal.tsx(537,17): error TS2353: Object literal may only specify known properties, and 'fullWorld' does not exist in type '{ multiplier?: number; backgroundColor?: string; }'.
+components/LayerEditorModal.tsx(609,17): error TS2322: Type '"image"' is not assignable to type '"layer" | "group"'.
+components/LayerEditorModal.tsx(646,17): error TS2353: Object literal may only specify known properties, and 'fullWorld' does not exist in type '{ multiplier?: number; backgroundColor?: string; }'.
+components/LayerEditorModal.tsx(747,17): error TS2322: Type '"image"' is not assignable to type '"layer" | "group"'.
+components/NodeBlock.tsx(481,13): error TS2304: Cannot find name 'onResizeStart'.
+components/NodeBlock.tsx(481,28): error TS2304: Cannot find name 'onResizeStart'.
+components/ProjectSettings.tsx(13,5): error TS2300: Duplicate identifier 'shareRole'.
+components/ProjectSettings.tsx(14,5): error TS2300: Duplicate identifier 'onShareRoleChange'.
+components/ProjectSettings.tsx(15,5): error TS2300: Duplicate identifier 'shareRole'.
+components/ProjectSettings.tsx(16,5): error TS2300: Duplicate identifier 'onShareRoleChange'.
+components/ProjectSettings.tsx(41,5): error TS2300: Duplicate identifier 'shareRole'.
+components/ProjectSettings.tsx(42,5): error TS2300: Duplicate identifier 'onShareRoleChange'.
+components/ProjectSettings.tsx(43,5): error TS2300: Duplicate identifier 'shareRole'.
+components/ProjectSettings.tsx(44,5): error TS2300: Duplicate identifier 'onShareRoleChange'.

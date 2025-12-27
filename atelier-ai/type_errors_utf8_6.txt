@@ -1,0 +1,4 @@
+﻿components/LayerEditorModal.tsx(609,17): error TS2322: Type '"image"' is not assignable to type '"layer" | "group"'.
+components/LayerEditorModal.tsx(747,17): error TS2322: Type '"image"' is not assignable to type '"layer" | "group"'.
+components/NodeBlock.tsx(481,13): error TS2304: Cannot find name 'onResizeStart'.
+components/NodeBlock.tsx(481,28): error TS2304: Cannot find name 'onResizeStart'.

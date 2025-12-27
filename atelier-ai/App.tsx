@@ -1,11 +1,13 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { GraphCanvas } from './components/GraphCanvas';
-import { LibraryPanel, InspectorPanel } from './components/Panels';
+import { FloatingPanel } from './components/FloatingPanel';
+import { ProjectSettings } from './components/ProjectSettings';
 import { SpatialHistoryView } from './components/SpatialHistoryView';
-import { Node, Edge, NodeStatus, Port, HistoryState, ViewMode } from './types';
-import { Play, ZoomIn, ZoomOut, Maximize, RefreshCw, Box, Trash2, Sparkles, X, Map, GitBranch, Camera } from 'lucide-react';
+import { Node, Edge, NodeStatus, Port, HistoryState, ViewMode, UserRole } from './types';
+import { Play, ZoomIn, ZoomOut, Maximize, RefreshCw, Box, Trash2, Map, GitBranch, Camera, Settings, User, Plus, MousePointerClick } from 'lucide-react';
 import { executeGraph, NODE_REGISTRY } from './services/nodeEngine';
+import { storageService } from './services/storage';
 
 // Helper: Recursively find all downstream nodes and edges
 const getDownstreamNetwork = (startNodeId: string, allNodes: Node[], allEdges: Edge[]) => {
@@ -103,7 +105,14 @@ class ErrorBoundary extends React.Component<
     }
 }
 
+import { FloatingActionButton, ToolbarView } from './components/FloatingActionButton';
 import { ComparisonViewModal } from './components/ComparisonViewModal';
+
+
+
+
+// Smart Guides Component
+
 
 const AppContent: React.FC = () => {
     // --- CORE STATE ---
@@ -114,51 +123,320 @@ const AppContent: React.FC = () => {
         targetNodeId: string | null;
     }>({ isOpen: false, baseNodeId: null, targetNodeId: null });
 
-    const [nodes, setNodes] = useState<Node[]>([
-        // Initial example graph - AI generation is now invisible
-        {
-            id: 'n-0', type: 'image_source', position: { x: 100, y: 50 },
-            data: { label: 'Main Subject', params: { image: null, role: 'MAIN' }, status: 'idle' }
-        },
-        {
-            id: 'n-4', type: 'image_source', position: { x: 100, y: 350 },
-            data: { label: 'Ref. Object', params: { image: null, role: 'REF' }, status: 'idle' }
-        },
-        {
-            id: 'n-1', type: 'input_prompt', position: { x: 100, y: 650 },
-            data: { label: 'Text Prompt', params: { text: 'Wear the blue hat on the model and make the final picture realistic.' }, status: 'idle' }
-        },
-        {
-            id: 'n-3', type: 'output_result', position: { x: 650, y: 250 },
-            data: { label: 'Final Preview', params: { role: 'MAIN' }, status: 'idle' }
-        }
-    ]);
-
-    const [edges, setEdges] = useState<Edge[]>([
-        // Direct connections - AI generation happens invisibly
-        { id: 'e-0', source: 'n-0', sourceHandle: 'image', target: 'n-3', targetHandle: 'main_subject' },
-        { id: 'e-ref', source: 'n-4', sourceHandle: 'image', target: 'n-3', targetHandle: 'ref_style' },
-        { id: 'e-1', source: 'n-1', sourceHandle: 'text', target: 'n-3', targetHandle: 'prompt_in' }
-    ]);
-
+    const [nodes, setNodes] = useState<Node[]>([]);
+    const [edges, setEdges] = useState<Edge[]>([]);
     const [historyNodes, setHistoryNodes] = useState<HistoryState[]>([]);
     const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
-
+    const [undoStack, setUndoStack] = useState<Array<{ nodes: Node[], edges: Edge[] }>>([]);
+    const [redoStack, setRedoStack] = useState<Array<{ nodes: Node[], edges: Edge[] }>>([]);
+    const [clipboard, setClipboard] = useState<{ nodes: Node[], edges: Edge[] } | null>(null);
     const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
     const [savedComponents, setSavedComponents] = useState<Array<{
         id: string;
-        macroId: string;
         label: string;
         description: string;
         data: any;
     }>>([]);
     const [isExecuting, setIsExecuting] = useState(false);
     const [autoRunEnabled, setAutoRunEnabled] = useState(false);
-    const [zoom, setZoom] = useState(1);
-    const [pan, setPan] = useState({ x: 0, y: 0 });
-    const [suggestedMacro, setSuggestedMacro] = useState<string[] | null>(null);
-    const [recentSnapshotIds, setRecentSnapshotIds] = useState<string[]>([]);  // Track last 3 snapshots for active path filtering
+    const [hasStartedWork, setHasStartedWork] = useState(() => {
+        return localStorage.getItem('onboarding_complete_v2') === 'true';
+    });
+    const [zoom, setZoomState] = useState(() => {
+        const saved = localStorage.getItem('graph_zoom');
+        return saved ? parseFloat(saved) : 1;
+    });
+    const [pan, setPanState] = useState(() => {
+        const saved = localStorage.getItem('graph_pan');
+        return saved ? JSON.parse(saved) : { x: 0, y: 0 };
+    });
+    const [recentSnapshotIds, setRecentSnapshotIds] = useState<string[]>([]);
+    const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+    const [isToolbarExpanded, setIsToolbarExpanded] = useState(false);
+    const [activeLibraryView, setActiveLibraryView] = useState<ToolbarView>('NODES');
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [isEditorOpen, setIsEditorOpen] = useState(false);
+    const [projectName, setProjectName] = useState('Autumn Collection V2');
+    const [selectedModel, setSelectedModel] = useState('Flux.1 Dev');
+    const [shareRole, setShareRole] = useState<UserRole>('CONSTRUCTOR');
+    const [exportedImages, setExportedImages] = useState<Array<{ id: string; url: string; date: string; timestamp: number }>>([]);
+    const [activityLog, setActivityLog] = useState<Array<{ id: string; text: string; timestamp: number }>>([]);
+    const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+    const [confirmationDialogue, setConfirmationDialogue] = useState<{
+        isOpen: boolean;
+        nodeId: string | null;
+        nodeName: string | null;
+    }>({ isOpen: false, nodeId: null, nodeName: null });
+
+    const profileMenuRef = useRef<HTMLDivElement>(null);
     const autoRunTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingRegenerationsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+    const setZoom = setZoomState;
+    const setPan = setPanState;
+
+    // Load exported images from storage on mount
+    useEffect(() => {
+        const loadImages = async () => {
+            try {
+                // const images = await storageService.getImages();
+                // setExportedImages(images);
+            } catch (error) {
+                console.error("Failed to load exported images:", error);
+            }
+        };
+        loadImages();
+    }, []);
+
+    // --- AUTO-SAVE & LOAD PROJECT ---
+    const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+
+    // Load Project on Mount
+    useEffect(() => {
+        const loadProject = async () => {
+            const savedState = await storageService.loadProject();
+            if (savedState) {
+                setNodes(savedState.nodes);
+                setEdges(savedState.edges);
+                // If we have saved layers, we might need to pass them down or restore them
+                // For now, restoring nodes/edges restores the graph structure and node data (including images)
+                console.log('Project restored from local storage');
+            }
+            setIsProjectLoaded(true);
+        };
+        loadProject();
+    }, []);
+
+    // Auto-Save Effect (Debounced)
+    useEffect(() => {
+        if (!isProjectLoaded) return; // Don't save before initial load completes
+
+        const saveTimeout = setTimeout(() => {
+            const state = {
+                id: 'current-project',
+                lastModified: Date.now(),
+                nodes,
+                edges,
+                layerState: [], // Placeholder if we need global layer state later
+                images: {}, // Images are currently stored in node data, so this can be empty or used for deduplication later
+                canvasSize: { width: 1024, height: 1024 } // Default or dynamic
+            };
+            storageService.saveProject(state);
+        }, 2000); // 2 second debounce
+
+        return () => clearTimeout(saveTimeout);
+    }, [nodes, edges, isProjectLoaded]);
+
+
+    const handleStartWork = useCallback(() => {
+        setNodes([
+            {
+                id: 'n-0', type: 'image_source', position: { x: 100, y: 50 },
+                data: { label: 'Main Subject', params: { image: null, role: 'MAIN' }, status: 'idle' }
+            },
+            {
+                id: 'n-4', type: 'image_source', position: { x: 100, y: 350 },
+                data: { label: 'Ref. Object', params: { image: null, role: 'REF' }, status: 'idle' }
+            },
+            {
+                id: 'n-1', type: 'input_prompt', position: { x: 100, y: 650 },
+                data: { label: 'Text Prompt', params: { text: 'Wear the blue hat on the model and make the final picture realistic.' }, status: 'idle' }
+            },
+            {
+                id: 'n-3', type: 'output_result', position: { x: 650, y: 250 },
+                data: { label: 'Final Preview', params: { role: 'MAIN' }, status: 'idle' }
+            }
+        ]);
+        setEdges([
+            { id: 'e-0', source: 'n-0', sourceHandle: 'image', target: 'n-3', targetHandle: 'main_subject' },
+            { id: 'e-ref', source: 'n-4', sourceHandle: 'image', target: 'n-3', targetHandle: 'ref_style' },
+            { id: 'e-1', source: 'n-1', sourceHandle: 'text', target: 'n-3', targetHandle: 'prompt_in' }
+        ]);
+        setHasStartedWork(true);
+        localStorage.setItem('onboarding_complete_v2', 'true');
+    }, []);
+
+
+
+    const pushToUndo = useCallback((nodesToPush: Node[], edgesToPush: Edge[], description: string = 'Action') => {
+        setUndoStack(prev => {
+            const next = [...prev, { 
+                nodes: JSON.parse(JSON.stringify(nodesToPush)), 
+                edges: JSON.parse(JSON.stringify(edgesToPush)) 
+            }];
+            if (next.length > 50) next.shift();
+            return next;
+        });
+        setRedoStack([]);
+        
+        // Add to Activity Log
+        setActivityLog(prev => [{
+            id: `act-${Date.now()}`,
+            text: description,
+            timestamp: Date.now()
+        }, ...prev].slice(0, 50));
+    }, []);
+
+    const handleUndo = useCallback(() => {
+        if (undoStack.length === 0) return;
+        
+        const prevState = undoStack[undoStack.length - 1];
+        const currentState = { 
+            nodes: JSON.parse(JSON.stringify(nodes)), 
+            edges: JSON.parse(JSON.stringify(edges)) 
+        };
+
+        setRedoStack(prev => [...prev, currentState]);
+        setUndoStack(prev => prev.slice(0, -1));
+        
+        setNodes(prevState.nodes);
+        setEdges(prevState.edges);
+    }, [undoStack, nodes, edges]);
+
+    const handleRedo = useCallback(() => {
+        if (redoStack.length === 0) return;
+
+        const nextState = redoStack[redoStack.length - 1];
+        const currentState = { 
+            nodes: JSON.parse(JSON.stringify(nodes)), 
+            edges: JSON.parse(JSON.stringify(edges)) 
+        };
+
+        setUndoStack(prev => [...prev, currentState]);
+        setRedoStack(prev => prev.slice(0, -1));
+
+        setNodes(nextState.nodes);
+        setEdges(nextState.edges);
+    }, [redoStack, nodes, edges]);
+
+    const deleteSelectedNodes = useCallback(() => {
+        if (selectedNodeIds.length === 0) return;
+        pushToUndo(nodes, edges, 'Delete Nodes');
+        setNodes(prev => prev.filter(n => !selectedNodeIds.includes(n.id)));
+        setEdges(prev => prev.filter(e => !selectedNodeIds.includes(e.source) && !selectedNodeIds.includes(e.target)));
+        setSelectedNodeIds([]);
+    }, [selectedNodeIds, nodes, edges, pushToUndo]);
+
+    const handleCopy = useCallback(() => {
+        if (selectedNodeIds.length === 0) return;
+        
+        const selectedNodes = nodes.filter(n => selectedNodeIds.includes(n.id));
+        const selectedEdges = edges.filter(e => 
+            selectedNodeIds.includes(e.source) && selectedNodeIds.includes(e.target)
+        );
+
+        setClipboard({
+            nodes: JSON.parse(JSON.stringify(selectedNodes)),
+            edges: JSON.parse(JSON.stringify(selectedEdges))
+        });
+    }, [nodes, edges, selectedNodeIds]);
+
+    const handleCut = useCallback(() => {
+        if (selectedNodeIds.length === 0) return;
+        handleCopy();
+        deleteSelectedNodes();
+    }, [handleCopy, deleteSelectedNodes, selectedNodeIds]);
+
+    const handlePaste = useCallback(() => {
+        if (!clipboard) return;
+
+        pushToUndo(nodes, edges, 'Paste Nodes');
+
+        const idMap: Record<string, string> = {};
+        const newNodes: Node[] = clipboard.nodes.map(node => {
+            const newId = `n-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+            idMap[node.id] = newId;
+            return {
+                ...node,
+                id: newId,
+                position: {
+                    x: node.position.x + 40,
+                    y: node.position.y + 40
+                },
+                data: {
+                    ...node.data,
+                    status: 'idle',
+                    result: undefined
+                }
+            };
+        });
+
+        const newEdges: Edge[] = clipboard.edges.map(edge => ({
+            ...edge,
+            id: `e-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            source: idMap[edge.source],
+            target: idMap[edge.target]
+        }));
+
+        setNodes(prev => [...prev, ...newNodes]);
+        setEdges(prev => [...prev, ...newEdges]);
+        setSelectedNodeIds(newNodes.map(n => n.id));
+    }, [clipboard, nodes, edges, pushToUndo]);
+
+
+
+
+
+
+    useEffect(() => {
+        if (nodes.length > 0 && !hasStartedWork) {
+            setHasStartedWork(true);
+            localStorage.setItem('onboarding_complete_v2', 'true');
+        }
+    }, [nodes.length, hasStartedWork]);
+    // Persist Pan and Zoom
+
+
+    useEffect(() => {
+        localStorage.setItem('graph_zoom', zoom.toString());
+    }, [zoom]);
+
+    useEffect(() => {
+        localStorage.setItem('graph_pan', JSON.stringify(pan));
+    }, [pan]);
+
+
+
+
+
+
+    const canPerform = useCallback((action: 'EDIT_NODES' | 'EXECUTE_FLOW' | 'CHANGE_SETTINGS' | 'VIEW_ONLY') => {
+        switch (shareRole) {
+            case 'CONSTRUCTOR':
+                return true;
+            case 'USER_ADMIN':
+                return true;
+            case 'USER_EDITOR':
+                return action === 'EDIT_NODES' || action === 'EXECUTE_FLOW';
+            case 'USER_VIEWER':
+                return action === 'VIEW_ONLY';
+            default:
+                return false;
+        }
+    }, [shareRole]);
+
+
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as any)) {
+                setIsProfileMenuOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    useEffect(() => {
+        const count = parseInt(sessionStorage.getItem('debug_load_count') || '0');
+        sessionStorage.setItem('debug_load_count', (count + 1).toString());
+        // Force re-render to show new count (hacky but works for debug)
+        setProjectName(prev => prev);
+    }, []);
+
+    // Robust Layout Initialization
+
+
+
 
     // --- NODE OPERATIONS ---
 
@@ -313,89 +591,7 @@ const AppContent: React.FC = () => {
         setHistoryNodes(prev => prev.map(h => h.id === id ? { ...h, is_archived: true } : h));
     }, [checkArchiveStatus]);
 
-    // --- AUTO-MACRO SYNTHESIS LOGIC (Existing) ---
-    const detectPatterns = useCallback(() => {
-        if (nodes.length < 3) return;
-        if (selectedNodeIds.length >= 3) {
-            const selectedNodes = nodes.filter(n => selectedNodeIds.includes(n.id));
-            let connectionCount = 0;
-            edges.forEach(e => {
-                if (selectedNodeIds.includes(e.source) && selectedNodeIds.includes(e.target)) {
-                    connectionCount++;
-                }
-            });
-            if (connectionCount >= selectedNodeIds.length - 1) {
-                setSuggestedMacro(selectedNodeIds);
-                return;
-            }
-        }
-        setSuggestedMacro(null);
-    }, [nodes, edges, selectedNodeIds]);
 
-    useEffect(() => {
-        detectPatterns();
-    }, [selectedNodeIds, detectPatterns]);
-
-    const synthesizeMacro = useCallback(() => {
-        if (!suggestedMacro || suggestedMacro.length === 0) return;
-        const internalNodes = nodes.filter(n => suggestedMacro.includes(n.id));
-        const internalEdges = edges.filter(e => suggestedMacro.includes(e.source) && suggestedMacro.includes(e.target));
-        let minX = Infinity, minY = Infinity;
-        internalNodes.forEach(n => {
-            minX = Math.min(minX, n.position.x);
-            minY = Math.min(minY, n.position.y);
-        });
-
-        const exposedInputs: Port[] = [];
-        const exposedOutputs: Port[] = [];
-
-        internalNodes.forEach(n => {
-            const def = NODE_REGISTRY[n.type];
-            if (!def) return;
-            def.inputs.forEach(port => {
-                const isInternal = internalEdges.some(e => e.target === n.id && e.targetHandle === port.id);
-                if (isInternal) return;
-                const hasParamValue = (port.type === 'text' && n.data.params.text) ||
-                    (port.type === 'image' && n.data.params.image);
-                if (!hasParamValue) {
-                    exposedInputs.push({
-                        id: `${n.id}__${port.id}`,
-                        label: `${n.data.label} (${port.label})`,
-                        type: port.type
-                    });
-                }
-            });
-            def.outputs.forEach(port => {
-                const isConnectedInternally = internalEdges.some(e => e.source === n.id && e.sourceHandle === port.id);
-                if (!isConnectedInternally || n.type === 'output_result' || n.type === 'ai_generator') {
-                    exposedOutputs.push({
-                        id: `${n.id}__${port.id}`,
-                        label: n.type === 'output_result' ? 'Final Result' : `${n.data.label} Out`,
-                        type: port.type
-                    });
-                }
-            });
-        });
-
-        const macroNode: Node = {
-            id: `macro-${Date.now()}`,
-            type: 'macro',
-            position: { x: minX, y: minY },
-            data: {
-                label: 'Smart Macro',
-                params: { internalNodes, internalEdges },
-                status: 'idle',
-                width: 300,
-                height: 200,
-                dynamicInputs: exposedInputs,
-                dynamicOutputs: exposedOutputs
-            }
-        };
-        setNodes(prev => [...prev.filter(n => !suggestedMacro.includes(n.id)), macroNode]);
-        setEdges(prev => [...prev.filter(e => !suggestedMacro.includes(e.source) && !suggestedMacro.includes(e.target))]);
-        setSuggestedMacro(null);
-        setSelectedNodeIds([macroNode.id]);
-    }, [nodes, edges, suggestedMacro]);
 
     const markDownstreamDirty = useCallback((nodeId: string, currentNodes: Node[], currentEdges: Edge[]): Node[] => {
         const newNodes = [...currentNodes];
@@ -407,7 +603,11 @@ const AppContent: React.FC = () => {
             visited.add(currentId);
             const nodeIndex = newNodes.findIndex(n => n.id === currentId);
             if (nodeIndex !== -1) {
-                newNodes[nodeIndex] = { ...newNodes[nodeIndex], data: { ...newNodes[nodeIndex].data, status: 'dirty', error: undefined } };
+                // Don't mark output_result nodes as dirty to prevent auto-regeneration
+                // They should only regenerate when user explicitly clicks Execute
+                if (newNodes[nodeIndex].type !== 'output_result') {
+                    newNodes[nodeIndex] = { ...newNodes[nodeIndex], data: { ...newNodes[nodeIndex].data, status: 'dirty', error: undefined } };
+                }
             }
             const outgoingEdges = currentEdges.filter(e => e.source === currentId);
             outgoingEdges.forEach(e => stack.push(e.target));
@@ -416,9 +616,33 @@ const AppContent: React.FC = () => {
     }, []);
 
     const updateNodeData = useCallback((id: string, newData: any) => {
+        // console.log('[App] updateNodeData called for:', id);
         setNodes(currentNodes => {
-            const updatedNodes = currentNodes.map(n => n.id === id ? { ...n, data: newData } : n);
-            if (newData.params) {
+            const updatedNodes = currentNodes.map(n => {
+                if (n.id === id) {
+                    const { position: explicitPosition, data: partialData, ...rest } = newData;
+
+                    // Merge data and params
+                    const mergedData = {
+                        ...n.data,
+                        ...(partialData || {}),
+                        params: {
+                            ...n.data.params,
+                            ...((partialData?.params) || {})
+                        }
+                    };
+
+                    return {
+                        ...n,
+                        ...rest,
+                        data: mergedData,
+                        position: explicitPosition || n.position
+                    };
+                }
+                return n;
+            });
+
+            if (newData.data?.params) {
                 return markDownstreamDirty(id, updatedNodes, edges);
             }
             return updatedNodes;
@@ -426,13 +650,26 @@ const AppContent: React.FC = () => {
     }, [edges, markDownstreamDirty]);
 
     /**
-     * NON-DESTRUCTIVE PROCEDURAL FORKING
+     * NON-DESTRUCTIVE PROCEDURAL FORKING WITH DELAYED REGENERATION CONFIRMATION
      * Handles state changes by creating parallel branches instead of destroying history.
+     * Implements latency timer to detect when user finishes editing before asking to regenerate.
      */
     const handleNodeParamChange = useCallback((nodeId: string, newParams: any) => {
+        pushToUndo(nodes, edges, 'Update Node Parameters');
         const node = nodes.find(n => n.id === nodeId);
         if (!node) return;
         if (JSON.stringify(node.data.params) === JSON.stringify(newParams)) return;
+
+        // Check if this node has an existing result
+        const hasExistingResult = node.data.result &&
+            (node.type === 'output_result' || node.type === 'ai_generator');
+
+        // Clear existing timer for this node
+        const existingTimer = pendingRegenerationsRef.current[nodeId];
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+            delete pendingRegenerationsRef.current[nodeId];
+        }
 
         // --- PRIORITY LOGIC HELPERS ---
         const isVisualChange = (
@@ -443,7 +680,14 @@ const AppContent: React.FC = () => {
         // SIMPLE IN-PLACE UPDATE
         // All parameter changes update the node directly without forking.
         // PRIORITY LOGIC: SIDE EFFECTS
-        let nodesToUpdate = [{ id: nodeId, data: { ...node.data, params: newParams, status: 'idle' as const } }];
+        let nodesToUpdate = [{
+            id: nodeId,
+            data: {
+                ...node.data,
+                params: newParams,
+                status: hasExistingResult ? 'pending_changes' as const : 'idle' as const
+            }
+        }];
 
         // Case A: FEEDBACK CHANNEL (Output -> Generator)
         if (node.type === 'output_result' && isVisualChange) {
@@ -499,6 +743,25 @@ const AppContent: React.FC = () => {
             // Mark downstream dirty for the primary node
             return markDownstreamDirty(nodeId, updatedNodes, edges);
         });
+
+        // DISABLED: Automatic confirmation dialogue
+        // The user should manually click the regenerate button instead
+        // This prevents unwanted regeneration when just adjusting parameters
+        /*
+        if (hasExistingResult) {
+            const timer = setTimeout(() => {
+                setConfirmationDialogue({
+                    isOpen: true,
+                    nodeId: nodeId,
+                    nodeName: node.data.label || node.type
+                });
+     
+                delete pendingRegenerationsRef.current[nodeId];
+            }, 4000);
+     
+            pendingRegenerationsRef.current[nodeId] = timer;
+        }
+        */
     }, [nodes, edges, markDownstreamDirty]);
 
     const updateNodeStatus = useCallback((id: string, status: string, result?: any, error?: string) => {
@@ -516,18 +779,11 @@ const AppContent: React.FC = () => {
         setSelectedNodeIds(prev => prev.filter(i => i !== id));
     };
 
-    const deleteSelectedNodes = useCallback(() => {
-        if (selectedNodeIds.length === 0) return;
-        setNodes(prev => prev.filter(n => !selectedNodeIds.includes(n.id)));
-        setEdges(prev => prev.filter(e => !selectedNodeIds.includes(e.source) && !selectedNodeIds.includes(e.target)));
-        setSelectedNodeIds([]);
-    }, [selectedNodeIds]);
+
 
     const handleCreateGroup = useCallback(() => {
         if (selectedNodeIds.length === 0) return;
-
-        // Generate unique MACRO_ID
-        const macroId = `macro-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        pushToUndo(nodes, edges, 'Create Group');
 
         const selectedNodes = nodes.filter(n => selectedNodeIds.includes(n.id));
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -550,8 +806,7 @@ const AppContent: React.FC = () => {
                     color: '#ffffff',
                     members: selectedNodeIds,
                     isCollapsed: false,
-                    expandedHeight: (maxY - minY) + (padding * 2),
-                    macroId: macroId  // Add MACRO_ID
+                    expandedHeight: (maxY - minY) + (padding * 2)
                 },
                 status: 'idle',
                 width: (maxX - minX) + (padding * 2),
@@ -559,7 +814,7 @@ const AppContent: React.FC = () => {
             }
         };
 
-        // Mark child nodes as part of macro
+        // Mark child nodes as part of group (removed macro logic)
         setNodes(prev => {
             const updatedNodes = prev.map(n => {
                 if (selectedNodeIds.includes(n.id)) {
@@ -569,8 +824,7 @@ const AppContent: React.FC = () => {
                             ...n.data,
                             params: {
                                 ...n.data.params,
-                                is_part_of_macro: true,
-                                macroId: macroId
+                                is_part_of_macro: false // No longer part of macro
                             }
                         }
                     };
@@ -592,9 +846,6 @@ const AppContent: React.FC = () => {
         const idsToDelete = [groupId, ...memberIds];
         const internalEdges = edges.filter(e => memberIds.includes(e.source) && memberIds.includes(e.target));
 
-        // Check if this group has a MACRO_ID
-        const macroId = groupNode.data.params.macroId;
-
         // Serialize the group data
         const groupData = {
             width: groupNode.data.width,
@@ -609,45 +860,14 @@ const AppContent: React.FC = () => {
             edges: internalEdges
         };
 
-        if (macroId) {
-            // CHECK: Does this MACRO_ID already exist in saved components?
-            const existingIndex = savedComponents.findIndex(c => c.macroId === macroId);
-
-            if (existingIndex !== -1) {
-                // UPDATE EXISTING MACRO
-                console.log(`🔄 Updating existing macro: ${macroId}`);
-                setSavedComponents(prev => prev.map((c, idx) =>
-                    idx === existingIndex ? {
-                        ...c,
-                        label: groupNode.data.label,
-                        description: `${memberNodes.length} nodes. Updated ${new Date().toLocaleTimeString()}`,
-                        data: groupData
-                    } : c
-                ));
-            } else {
-                // CREATE NEW MACRO (first time saving)
-                console.log(`✨ Creating new macro: ${macroId}`);
-                const newComponent = {
-                    id: `comp-${Date.now()}`,
-                    macroId: macroId,
-                    label: groupNode.data.label,
-                    description: `${memberNodes.length} nodes. ${new Date().toLocaleTimeString()}`,
-                    data: groupData
-                };
-                setSavedComponents(prev => [...prev, newComponent]);
-            }
-        } else {
-            // No MACRO_ID - create new (backward compatibility)
-            console.log('⚠️ No MACRO_ID found, creating new component');
-            const newComponent = {
-                id: `comp-${Date.now()}`,
-                macroId: `macro-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                label: groupNode.data.label,
-                description: `${memberNodes.length} nodes. ${new Date().toLocaleTimeString()}`,
-                data: groupData
-            };
-            setSavedComponents(prev => [...prev, newComponent]);
-        }
+        // Create new component (simplified, no macroId check)
+        const newComponent = {
+            id: `comp-${Date.now()}`,
+            label: groupNode.data.label,
+            description: `${memberNodes.length} nodes. ${new Date().toLocaleTimeString()}`,
+            data: groupData
+        };
+        setSavedComponents(prev => [...prev, newComponent]);
 
         // Remove nodes from canvas
         setNodes(prev => prev.filter(n => !idsToDelete.includes(n.id)));
@@ -658,10 +878,6 @@ const AppContent: React.FC = () => {
     const restoreGroupFromSidebar = useCallback((componentId: string, dropPosition: { x: number, y: number }) => {
         const component = savedComponents.find(c => c.id === componentId);
         if (!component) return;
-
-        // Ensure macroId exists (backward compatibility)
-        const macroId = component.macroId || `macro-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        console.log(`🔄 Restoring group with MACRO_ID: ${macroId}`);
 
         const idMap: Record<string, string> = {};
         const newGroupId = `g-${Date.now()}`;
@@ -682,14 +898,11 @@ const AppContent: React.FC = () => {
                     members: component.data.nodes.map((n: Node) => idMap[n.id]),
                     color: '#ffffff',
                     isCollapsed: false,
-                    expandedHeight: component.data.height,
-                    macroId: macroId  // Preserve MACRO_ID
+                    expandedHeight: component.data.height
                 },
                 status: 'idle'
             }
         };
-
-        console.log(`✅ Restored group node ${newGroupId} with macroId: ${newGroupNode.data.params.macroId}`);
 
         const newMemberNodes = component.data.nodes.map((n: Node) => ({
             ...n,
@@ -704,8 +917,7 @@ const AppContent: React.FC = () => {
                 result: n.data.result,
                 params: {
                     ...n.data.params,
-                    is_part_of_macro: true,  // Mark as part of macro
-                    macroId: macroId  // Assign MACRO_ID
+                    is_part_of_macro: false
                 }
             }
         }));
@@ -732,13 +944,29 @@ const AppContent: React.FC = () => {
     }, [pan, zoom, restoreGroupFromSidebar]);
 
     const handleToggleGroup = useCallback((groupId: string) => {
+        pushToUndo(nodes, edges, 'Toggle Group');
         setNodes(prev => {
             const groupNode = prev.find(n => n.id === groupId);
             if (!groupNode) return prev;
             const isCollapsing = !groupNode.data.params.isCollapsed;
             const memberIds = groupNode.data.params.members || [];
             return prev.map(n => {
-                if (n.id === groupId) return { ...n, data: { ...n.data, params: { ...n.data.params, isCollapsed: isCollapsing, expandedHeight: isCollapsing ? n.data.height : n.data.params.expandedHeight }, height: isCollapsing ? 40 : (n.data.params.expandedHeight || n.data.height) } };
+                if (n.id === groupId) {
+                    const memberIds = n.data.params.members || [];
+                    const collapsedHeight = 60 + (memberIds.length * 24);
+                    return { 
+                        ...n, 
+                        data: { 
+                            ...n.data, 
+                            params: { 
+                                ...n.data.params, 
+                                isCollapsed: isCollapsing, 
+                                expandedHeight: isCollapsing ? n.data.height : n.data.params.expandedHeight 
+                            }, 
+                            height: isCollapsing ? collapsedHeight : (n.data.params.expandedHeight || n.data.height) 
+                        } 
+                    };
+                }
                 if (memberIds.includes(n.id)) return { ...n, hidden: isCollapsing };
                 return n;
             });
@@ -747,6 +975,7 @@ const AppContent: React.FC = () => {
 
     const handleLoopback = (imageUrl: string, sourceNodeId?: string) => {
         if (!imageUrl) return;
+        pushToUndo(nodes, edges, 'Loopback Image');
         let pos = { x: 0, y: 0 };
         if (sourceNodeId) {
             const sourceNode = nodes.find(n => n.id === sourceNodeId);
@@ -765,9 +994,30 @@ const AppContent: React.FC = () => {
         setNodes(prev => [...prev, newNode]);
     };
 
+    const handleExportImage = useCallback(async (imageUrl: string) => {
+        const now = new Date();
+        const dateStr = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`;
+        const newImage = {
+            id: `img-${Date.now()}`,
+            url: imageUrl,
+            date: dateStr,
+            timestamp: Date.now()
+        };
+        
+        setExportedImages(prev => [newImage, ...prev]);
+        
+        // Save to persistent storage
+        try {
+            await StorageService.saveImage(newImage);
+        } catch (error) {
+            console.error("Failed to save image to storage:", error);
+        }
+    }, []);
+
     const handleAddNode = (type: string) => {
         const def = NODE_REGISTRY[type];
         if (!def) return;
+        pushToUndo(nodes, edges, `Add ${def.label}`);
         const viewportCenterX = (window.innerWidth - 64) / 2 + 64;
         const viewportCenterY = window.innerHeight / 2;
         const worldX = (viewportCenterX - pan.x) / zoom;
@@ -788,6 +1038,7 @@ const AppContent: React.FC = () => {
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
+        pushToUndo(nodes, edges, 'Drop Node');
         const rect = e.currentTarget.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -804,15 +1055,66 @@ const AppContent: React.FC = () => {
         setNodes(prev => [...prev, newNode]);
     };
 
-    const handleExecute = useCallback(async () => {
+    const handleExecute = useCallback(async (targetNodeId?: string) => {
+        // If targetNodeId is provided, only regenerate that specific node
+        // Otherwise, regenerate all nodes (explicit user action)
+
+        const executionContext = {
+            targetNodeIds: targetNodeId ? [targetNodeId] : undefined,
+            explicitTrigger: true  // User clicked Execute button
+        };
+
+
+        // DISABLED: Forced status reset bypasses flow isolation logic
+        // Let nodeEngine.ts decide based on input hash comparison
+        /*
+        setNodes(currentNodes => currentNodes.map(n =>
+            n.type === 'output_result' && (!targetNodeId || n.id === targetNodeId)
+                ? { ...n, data: { ...n.data, status: 'idle' } }
+                : n
+        ));
+        */
+
+        // Only reset status if explicitly targeting a specific node
+        if (targetNodeId) {
+            setNodes(currentNodes => currentNodes.map(n =>
+                n.id === targetNodeId
+                    ? { ...n, data: { ...n.data, status: 'idle' } }
+                    : n
+            ));
+        }
+
+        // Small delay to ensure state update completes
+        await new Promise(resolve => setTimeout(resolve, 50));
+
         setIsExecuting(true);
-        await executeGraph(nodes, edges, updateNodeStatus);
-        setIsExecuting(false);
+        try {
+            await executeGraph(nodes, edges, updateNodeStatus, undefined, executionContext);
+        } catch (error) {
+            console.error("Execution failed:", error);
+        } finally {
+            setIsExecuting(false);
+        }
     }, [nodes, edges, updateNodeStatus]);
+
+    const handleElementAction = useCallback((action?: string) => {
+        if (!action || action === 'NONE') return;
+
+        switch (action) {
+            case 'EXECUTE_FLOW': handleExecute(); break;
+            case 'TOGGLE_LIBRARY': setIsLibraryOpen(prev => !prev); break;
+            case 'OPEN_SETTINGS': setIsSettingsOpen(true); break;
+        }
+    }, [handleExecute]);
 
     useEffect(() => {
         if (!autoRunEnabled) return;
-        const hasDirtyNodes = nodes.some(n => n.data.status === 'dirty' || (n.data.status === 'idle' && !n.data.result && edges.some(e => e.target === n.id)));
+        // Exclude output_result and ai_generator nodes from auto-run trigger to prevent unwanted regeneration
+        const hasDirtyNodes = nodes.some(n =>
+            n.type !== 'output_result' &&
+            n.type !== 'ai_generator' &&
+            (n.data.status === 'dirty' || (n.data.status === 'idle' && !n.data.result && edges.some(e => e.target === n.id)))
+        );
         if (hasDirtyNodes) {
             if (autoRunTimeoutRef.current) clearTimeout(autoRunTimeoutRef.current);
             autoRunTimeoutRef.current = setTimeout(() => { handleExecute(); }, 800);
@@ -820,7 +1122,10 @@ const AppContent: React.FC = () => {
         return () => { if (autoRunTimeoutRef.current) clearTimeout(autoRunTimeoutRef.current); };
     }, [nodes, edges, autoRunEnabled, handleExecute]);
 
+    // --- Node Interaction ---
     const handleNodeMouseDown = (e: React.MouseEvent, id: string) => {
+        if (isEditorOpen) return; // Safety gate: Disable node selection when editor is open
+        e.stopPropagation(); // Prevent React Flow's default drag behavior if we're handling selection
         if (e.shiftKey) {
             setSelectedNodeIds(prev => prev.includes(id) ? prev.filter(n => n !== id) : [...prev, id]);
         } else {
@@ -864,6 +1169,54 @@ const AppContent: React.FC = () => {
         }
     };
 
+    const handleRegenerateNode = useCallback((nodeId: string) => {
+        handleExecute(nodeId);
+    }, [handleExecute]);
+
+    const handleConfirmRegenerate = useCallback(() => {
+        if (confirmationDialogue.nodeId) {
+            // Reset status to idle and trigger regeneration
+            setNodes(currentNodes => currentNodes.map(n =>
+                n.id === confirmationDialogue.nodeId
+                    ? { ...n, data: { ...n.data, status: 'idle' } }
+                    : n
+            ));
+
+            // Trigger regeneration
+            handleExecute(confirmationDialogue.nodeId);
+        }
+
+        setConfirmationDialogue({ isOpen: false, nodeId: null, nodeName: null });
+    }, [confirmationDialogue, handleExecute]);
+
+    const handleKeepExisting = useCallback(() => {
+        // Keep the node in pending_changes state
+        // User can manually regenerate later if needed
+        setConfirmationDialogue({ isOpen: false, nodeId: null, nodeName: null });
+    }, []);
+
+    const handleToolbarViewChange = useCallback((view: ToolbarView) => {
+        if (view === 'ACTIVITY') {
+            if (viewMode === 'HISTORY') {
+                setViewMode('EDITOR');
+            } else {
+                // Open Activity Panel instead of full screen history
+                setViewMode('EDITOR');
+                setActiveLibraryView('ACTIVITY');
+                setIsLibraryOpen(true);
+            }
+            return;
+        }
+
+        if (isLibraryOpen && activeLibraryView === view) {
+            setIsLibraryOpen(false);
+        } else {
+            setViewMode('EDITOR');
+            setActiveLibraryView(view);
+            setIsLibraryOpen(true);
+        }
+    }, [isLibraryOpen, activeLibraryView, viewMode]);
+
     return (
         <div className="w-full h-screen bg-black text-white flex overflow-hidden font-sans selection:bg-fashion-accent selection:text-black">
             {/* COMPARISON MODAL */}
@@ -878,75 +1231,55 @@ const AppContent: React.FC = () => {
                 />
             )}
 
-            <LibraryPanel
-                onAddNode={handleAddNode}
-                savedComponents={savedComponents}
-                onRestoreComponent={handleRestoreCentered}
+            {/* REGENERATION CONFIRMATION DIALOGUE */}
+            {confirmationDialogue.isOpen && confirmationDialogue.nodeId && (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 animate-in fade-in">
+                    <div className="bg-[#1e1e1e] border-2 border-fashion-accent rounded-lg p-6 max-w-md mx-4 shadow-2xl">
+                        <h3 className="text-lg font-bold text-white mb-3">
+                            Обнаружены изменения
+                        </h3>
+                        <p className="text-sm text-gray-300 mb-6">
+                            Обнаружены изменения во входе узла <span className="text-fashion-accent font-bold">{confirmationDialogue.nodeName}</span>,
+                            но у этого потока есть готовый результат. Хотите ли вы запустить регенерацию и заменить уже созданное изображение?
+                        </p>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={handleKeepExisting}
+                                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-md transition-colors"
+                            >
+                                Нет, оставить как есть
+                            </button>
+                            <button
+                                onClick={handleConfirmRegenerate}
+                                className="flex-1 px-4 py-2 bg-fashion-accent hover:bg-white/10 text-white border border-white/20 font-bold rounded-md transition-colors"
+                            >
+                                Да, регенерировать
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <ProjectSettings
+                isOpen={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+                projectName={projectName}
+                onProjectNameChange={setProjectName}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                shareRole={shareRole}
+                onShareRoleChange={setShareRole}
             />
 
             <main className="flex-1 relative flex flex-col h-full">
-                <header className="h-14 bg-[#111] border-b border-[#222] flex items-center justify-between px-6 z-10 shrink-0">
-                    <div className="flex items-center space-x-4">
-                        <span className="text-xs text-gray-500">Project: </span>
-                        <span className="text-sm font-medium text-gray-200">Autumn Collection V2</span>
-                    </div>
-
-                    <div className="flex items-center space-x-3">
-                        {/* VIEW TOGGLE */}
-                        <div className="flex bg-[#0a0a0a] border border-[#222] rounded p-0.5 mr-4">
-                            <button
-                                onClick={() => setViewMode('EDITOR')}
-                                className={`px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${viewMode === 'EDITOR' ? 'bg-[#222] text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}
-                            >
-                                <Box className="w-3 h-3" /> Editor
-                            </button>
-                            <button
-                                onClick={() => setViewMode('HISTORY')}
-                                className={`px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all ${viewMode === 'HISTORY' ? 'bg-[#222] text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}
-                            >
-                                <Map className="w-3 h-3" /> Map
-                            </button>
-                        </div>
-
-                        {viewMode === 'EDITOR' && (
-                            <>
-                                <button
-                                    onClick={() => createSnapshot(`Manual Save ${new Date().toLocaleTimeString()}`)}
-                                    className="px-3 py-1.5 rounded-md flex items-center space-x-2 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition-all"
-                                    title="Snapshot Current State to History"
-                                >
-                                    <Camera className="w-3 h-3" />
-                                    <span className="text-[10px] font-bold uppercase tracking-wide">Snapshot</span>
-                                </button>
-
-                                <div className="h-4 w-px bg-gray-800 mx-2"></div>
-
-                                <button
-                                    onClick={() => setAutoRunEnabled(!autoRunEnabled)}
-                                    className={`px-3 py-1.5 rounded-md flex items-center space-x-2 transition-all border ${autoRunEnabled ? 'bg-green-900/20 border-green-800 text-green-400' : 'bg-gray-800 border-gray-700 text-gray-400'
-                                        }`}
-                                >
-                                    <RefreshCw className={`w-3 h-3 ${autoRunEnabled ? 'animate-spin-slow' : ''}`} />
-                                    <span className="text-[10px] font-bold uppercase tracking-wide">Auto-Run: {autoRunEnabled ? 'ON' : 'OFF'}</span>
-                                </button>
-
-                                <button
-                                    onClick={handleExecute}
-                                    disabled={isExecuting}
-                                    className={`px-4 py-1.5 rounded-md flex items-center space-x-2 transition-all ${isExecuting ? 'bg-gray-700 cursor-wait' : 'bg-fashion-accent text-black hover:bg-yellow-500'
-                                        }`}
-                                >
-                                    <Play className="w-3 h-3 fill-current" />
-                                    <span className="text-xs font-bold uppercase tracking-wide">{isExecuting ? 'Processing...' : 'Execute Flow'}</span>
-                                </button>
-                            </>
-                        )}
-                    </div>
-                </header>
-
                 <div className="flex-1 relative overflow-hidden">
                     {viewMode === 'EDITOR' ? (
-                        <div className="w-full h-full" onDragOver={handleDragOver} onDrop={handleDrop}>
+                        <div
+                            className="w-full h-full transition-all duration-300"
+                            style={{ pointerEvents: isEditorOpen ? 'none' : 'auto' }}
+                            onDragOver={handleDragOver}
+                            onDrop={handleDrop}
+                        >
                             <GraphCanvas
                                 nodes={nodes}
                                 edges={edges}
@@ -954,29 +1287,50 @@ const AppContent: React.FC = () => {
                                 setEdges={setEdges}
                                 selectedNodeIds={selectedNodeIds}
                                 setSelectedNodeIds={setSelectedNodeIds}
-                                onNodeMouseDown={handleNodeMouseDown}
-                                onUpdateNodeData={updateNodeData}
-                                onLoopback={handleLoopback}
-                                onToggleGroup={handleToggleGroup}
-                                onSaveGroup={transferGroupToSidebar}
-                                onCompare={handleCompareNode}
-                                comparisonBaseId={comparisonState.baseNodeId}
-                                zoom={zoom}
-                                pan={pan}
                                 setZoom={setZoom}
                                 setPan={setPan}
+                                // Disable interactions for Viewers
+                                onNodeMouseDown={isEditorOpen ? undefined : handleNodeMouseDown}
+                                onUpdateNodeData={updateNodeData}
+                                onLoopback={canPerform('EDIT_NODES') ? handleLoopback : undefined}
+                                onToggleGroup={canPerform('EDIT_NODES') ? handleToggleGroup : undefined}
+                                onSaveGroup={canPerform('EDIT_NODES') ? transferGroupToSidebar : undefined}
+                                onRegenerateNode={canPerform('EXECUTE_FLOW') ? handleRegenerateNode : undefined}
+                                onDeleteNodes={canPerform('EDIT_NODES') ? deleteSelectedNodes : undefined}
+                                onUndo={handleUndo}
+                                onRedo={handleRedo}
+                                onCopyNodes={handleCopy}
+                                onCutNodes={handleCut}
+                                onPasteNodes={handlePaste}
+                                onPushHistory={pushToUndo}
+                                onCompare={(nodeId) => {
+                                    setComparisonState({
+                                        isOpen: true,
+                                        baseNodeId: nodeId,
+                                        targetNodeId: null
+                                    });
+                                }}
+                                onExportImage={handleExportImage}
+                                onEditorToggle={setIsEditorOpen}
+                                isEditorOpen={isEditorOpen}
+                                zoom={zoom}
+                                pan={pan}
                             />
 
-                            {/* Zoom Controls */}
-                            <div className="absolute bottom-4 left-4 flex flex-col gap-1 bg-[#1e1e1e] p-1 rounded border border-[#333] shadow-xl z-50">
-                                <button onClick={() => setZoom(z => Math.min(z + 0.2, 3))} className="p-2 hover:bg-[#333] rounded text-gray-400 hover:text-fashion-accent"><ZoomIn className="w-4 h-4" /></button>
-                                <button onClick={() => setZoom(z => Math.max(z - 0.2, 0.2))} className="p-2 hover:bg-[#333] rounded text-gray-400 hover:text-fashion-accent"><ZoomOut className="w-4 h-4" /></button>
-                                <div className="h-px bg-[#333] my-0.5 mx-2"></div>
-                                <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="p-2 hover:bg-[#333] rounded text-gray-400 hover:text-fashion-accent"><Maximize className="w-4 h-4" /></button>
-                            </div>
-                            <div className="absolute bottom-4 right-4 bg-[#1e1e1e] px-2 py-1 rounded border border-[#333] text-[10px] text-gray-500 pointer-events-none">
-                                {Math.round(zoom * 100)}%
-                            </div>
+                            {/* Empty State / Onboarding Overlay */}
+                            {nodes.length === 0 && !hasStartedWork && (
+                                <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none bg-black/40 animate-in fade-in duration-500">
+                                    <button
+                                        onDoubleClick={handleStartWork}
+                                        className="pointer-events-auto flex items-center gap-2 px-4 py-1.5 bg-[#111] border border-white/10 rounded-full shadow-2xl hover:bg-[#1a1a1a] hover:border-white/20 hover:scale-105 transition-all group select-none"
+                                    >
+                                        <div className="relative flex items-center justify-center w-6 h-6 bg-white/5 rounded-full border border-white/10 group-hover:bg-white/10 transition-colors">
+                                            <MousePointerClick className="w-3 h-3 text-white/80 group-hover:text-white transition-colors" />
+                                        </div>
+                                        <span className="text-xs font-medium text-white/90 tracking-wide group-hover:text-white transition-colors">Double click to start work</span>
+                                    </button>
+                                </div>
+                            )}
 
                             {/* Selection Toolbar */}
                             {selectedNodeIds.length > 0 && (
@@ -993,27 +1347,47 @@ const AppContent: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* AI Macro Suggestion */}
-                            {suggestedMacro && (
-                                <div className="absolute top-4 right-6 w-72 bg-[#1a1a1a] border border-fashion-accent/30 rounded-lg shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-right-4 duration-300">
-                                    <div className="flex items-start justify-between mb-2">
-                                        <div className="flex items-center gap-2 text-fashion-accent">
-                                            <Sparkles className="w-4 h-4" />
-                                            <h4 className="text-xs font-bold uppercase tracking-wider">AI Insight</h4>
-                                        </div>
-                                        <button onClick={() => setSuggestedMacro(null)} className="text-gray-500 hover:text-white">
-                                            <X className="w-3 h-3" />
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-gray-300 mb-3 leading-relaxed">
-                                        I've detected a linear workflow pattern ({suggestedMacro.length} nodes).
-                                        Would you like to synthesize this into a single <strong>Smart Macro</strong>?
-                                    </p>
-                                    <button onClick={synthesizeMacro} className="w-full py-2 bg-fashion-accent text-black font-bold text-xs uppercase rounded hover:bg-yellow-500 transition-colors">
-                                        Synthesize Macro
+                            {/* Repositioned Zoom Controls (2) */}
+                            <div className="absolute bottom-6 left-6 flex flex-col gap-2 pointer-events-auto">
+                                <div className="flex flex-col bg-black/40 backdrop-blur-md border border-white/10 p-1.5 rounded-xl shadow-xl">
+                                    <button 
+                                        onClick={() => {
+                                            const s = 1.2;
+                                            const newZoom = Math.min(zoom * s, 20);
+                                            const centerX = window.innerWidth / 2;
+                                            const centerY = window.innerHeight / 2;
+                                            const worldX = (centerX - pan.x) / zoom;
+                                            const worldY = (centerY - pan.y) / zoom;
+                                            const newPanX = centerX - worldX * newZoom;
+                                            const newPanY = centerY - worldY * newZoom;
+                                            setZoom(newZoom);
+                                            setPan({ x: newPanX, y: newPanY });
+                                        }} 
+                                        className="p-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all"
+                                    >
+                                        <ZoomIn className="w-4 h-4" />
                                     </button>
+                                    <button 
+                                        onClick={() => {
+                                            const s = 0.8;
+                                            const newZoom = Math.max(zoom * s, 0.05);
+                                            const centerX = window.innerWidth / 2;
+                                            const centerY = window.innerHeight / 2;
+                                            const worldX = (centerX - pan.x) / zoom;
+                                            const worldY = (centerY - pan.y) / zoom;
+                                            const newPanX = centerX - worldX * newZoom;
+                                            const newPanY = centerY - worldY * newZoom;
+                                            setZoom(newZoom);
+                                            setPan({ x: newPanX, y: newPanY });
+                                        }} 
+                                        className="p-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all"
+                                    >
+                                        <ZoomOut className="w-4 h-4" />
+                                    </button>
+                                    <div className="h-px bg-white/10 my-1 mx-1.5"></div>
+                                    <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} className="p-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all"><Maximize className="w-4 h-4" /></button>
                                 </div>
-                            )}
+                            </div>
                         </div>
                     ) : (
                         <SpatialHistoryView
@@ -1031,17 +1405,180 @@ const AppContent: React.FC = () => {
                 </div>
             </main>
 
-            {viewMode === 'EDITOR' && (
-                <InspectorPanel
-                    selectedNode={nodes.find(n => n.id === selectedNodeIds[selectedNodeIds.length - 1])}
-                    nodes={nodes}
-                    edges={edges}
-                    updateNodeData={updateNodeData}
-                    onUpdateNodeParams={handleNodeParamChange}
-                    deleteNode={deleteNode}
-                    onLoopback={handleLoopback}
+            {/* Floating UI Elements */}
+            <div className="fixed inset-0 pointer-events-none z-50">
+                {/* Top Left: Settings (Only for Admin/Constructor) */}
+                {/* Top Left: Settings (Only for Admin/Constructor) */}
+                {canPerform('CHANGE_SETTINGS') && (
+                    <button
+                        onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                        className="absolute top-6 left-6 p-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full text-white/60 hover:text-white hover:bg-black/60 transition-all pointer-events-auto shadow-xl"
+                    >
+                        <Settings className="w-5 h-5" />
+                    </button>
+                )}
+
+
+
+                {/* Top Center: View Toggle (1) */}
+                {/* Top Center: View Toggle (1) */}
+                <div className="absolute top-6 left-1/2 -translate-x-1/2 pointer-events-auto z-50">
+                    <div className="flex bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl p-1 shadow-xl">
+                        <button
+                            onClick={() => setViewMode('EDITOR')}
+                            className={`px-6 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all ${viewMode === 'EDITOR' ? 'bg-white/10 text-white shadow-sm' : 'text-white/40 hover:text-white'}`}
+                        >
+                            <Box className="w-3.5 h-3.5" /> Editor
+                        </button>
+                        <button
+                            onClick={() => setViewMode('HISTORY')}
+                            className={`px-6 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all ${viewMode === 'HISTORY' ? 'bg-white/10 text-white shadow-sm' : 'text-white/40 hover:text-white'}`}
+                        >
+                            <Map className="w-3.5 h-3.5" /> Map
+                        </button>
+                    </div>
+                </div>
+
+                {/* Top Right: User & Actions */}
+                <div className="absolute top-6 right-6 flex items-center gap-3">
+                    {/* User Profile */}
+                    <div className="relative" ref={profileMenuRef}>
+                        <button 
+                            onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+                            className={`p-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full transition-all shadow-xl pointer-events-auto ${isProfileMenuOpen ? 'text-white bg-black/60 border-white/30' : 'text-white/60 hover:text-white hover:bg-black/60'}`}
+                        >
+                            <User className="w-5 h-5" />
+                        </button>
+
+                        {/* Profile Dropdown Menu */}
+                        {isProfileMenuOpen && (
+                            <div className="absolute top-14 right-0 w-64 bg-black/60 backdrop-blur-xl border border-white/10 rounded-[32px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200 z-[100]">
+                                <h3 className="text-white font-bold mb-6 px-2">Profile info</h3>
+                                <div className="flex flex-col gap-3">
+                                    <button className="w-full py-3 px-6 bg-white/5 hover:bg-white/10 border border-white/5 rounded-full text-white text-sm text-left transition-all">
+                                        User name
+                                    </button>
+                                    <button className="w-full py-3 px-6 bg-white/5 hover:bg-white/10 border border-white/5 rounded-full text-white text-sm text-left transition-all">
+                                        Pricing
+                                    </button>
+                                    <button className="w-full py-3 px-6 bg-white/5 hover:bg-white/10 border border-white/5 rounded-full text-white text-sm text-left transition-all">
+                                        Send a feedback
+                                    </button>
+                                    <button className="w-full py-3 px-6 bg-white/5 hover:bg-white/10 border border-white/5 rounded-full text-white text-sm text-left transition-all mt-2">
+                                        Log out
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {viewMode === 'EDITOR' && (
+                        <>
+                            <button
+                                onClick={() => handleExecute()}
+                                disabled={isExecuting || !canPerform('EXECUTE_FLOW')}
+                                className={`p-3 rounded-full shadow-xl flex items-center justify-center transition-all pointer-events-auto ${isExecuting ? 'bg-white/10 text-white/40 cursor-wait' : !canPerform('EXECUTE_FLOW') ? 'bg-white/5 text-white/20 cursor-not-allowed' : 'bg-fashion-accent text-white border border-white/20 hover:bg-white/10 hover:scale-[1.02] active:scale-[0.98]'}`}
+                                title={isExecuting ? 'Running...' : 'Execute Flow'}
+                            >
+                                <Play className="w-5 h-5 fill-current" />
+                            </button>
+
+                            <button
+                                onClick={() => setAutoRunEnabled(!autoRunEnabled)}
+                                className={`p-3 bg-black/40 backdrop-blur-md border rounded-full shadow-xl flex items-center justify-center transition-all pointer-events-auto ${autoRunEnabled ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'border-white/10 text-white/40 hover:text-white hover:bg-black/60'}`}
+                                title="Auto-Run"
+                            >
+                                <RefreshCw className={`w-5 h-5 ${autoRunEnabled ? 'animate-spin-slow' : ''}`} />
+                            </button>
+
+                            <button
+                                onClick={() => createSnapshot(`Manual Save ${new Date().toLocaleTimeString()}`)}
+                                className="p-3 bg-black/40 backdrop-blur-md hover:bg-black/60 text-white/60 hover:text-white border border-white/10 rounded-full shadow-xl transition-all flex items-center justify-center pointer-events-auto"
+                                title="Snapshot Current State"
+                            >
+                                <Camera className="w-5 h-5" />
+                            </button>
+                        </>
+                    )}
+                </div>
+
+                {/* Left Side: 1K Label (Moved with zoom controls) */}
+                {/* Left Side: 1K Label (Moved with zoom controls) */}
+                <div className="absolute bottom-40 left-6 pointer-events-auto">
+                    <div className={`px-4 py-2 bg-black/40 backdrop-blur-md border border-white/10 rounded-full text-[9px] font-bold text-white/40 tracking-widest pointer-events-auto shadow-xl cursor-default`}>
+                        1K
+                    </div>
+                </div>
+
+                {/* Right Side: Plus Button (3) & Zoom % */}
+                <div className="absolute bottom-20 right-6 pointer-events-auto">
+                    {canPerform('EDIT_NODES') ? (
+                        <button
+                            onClick={() => {
+                                if (!isLibraryOpen) {
+                                    setIsLibraryOpen(true);
+                                    setActiveLibraryView('NODES');
+                                } else if (activeLibraryView !== 'NODES') {
+                                    setActiveLibraryView('NODES');
+                                } else {
+                                    setIsLibraryOpen(false);
+                                }
+                            }}
+                            className="p-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full text-white/60 hover:text-white hover:bg-black/60 transition-all shadow-xl pointer-events-auto"
+                        >
+                            <Plus className="w-5 h-5" />
+                        </button>
+                    ) : <div />}
+                </div>
+
+                <div className="absolute bottom-6 right-6 pointer-events-auto">
+                    <div className="w-11 h-11 flex items-center justify-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full text-[9px] font-bold text-white/40 shadow-xl pointer-events-auto">
+                        {Math.round(zoom * 100)}%
+                    </div>
+                </div>
+
+
+            </div>
+
+
+
+            {/* Floating Library Panel */}
+            <FloatingPanel
+                isOpen={isLibraryOpen}
+                activeView={activeLibraryView}
+                onViewChange={handleToolbarViewChange}
+                onAddNode={handleAddNode}
+                savedComponents={savedComponents}
+                onRestoreComponent={handleRestoreCentered}
+                isExecuting={isExecuting}
+                onToggleExpand={() => {
+                    if (isLibraryOpen) {
+                        setIsLibraryOpen(false);
+                    } else {
+                        setIsToolbarExpanded(!isToolbarExpanded);
+                    }
+                }}
+                isExpanded={isToolbarExpanded}
+                exportedImages={exportedImages}
+                activityLog={activityLog}
+                onOpenSpatialHistory={() => {
+                    setIsLibraryOpen(false);
+                    setViewMode('HISTORY');
+                }}
+            />
+
+            {/* Default Toolbar (when panel is closed) */}
+            {!isLibraryOpen && (
+                <FloatingActionButton
+                    isExpanded={isToolbarExpanded}
+                    onToggleExpand={() => setIsToolbarExpanded(!isToolbarExpanded)}
+                    onViewChange={handleToolbarViewChange}
+                    activeView={activeLibraryView}
+                    isLibraryOpen={isLibraryOpen}
                 />
             )}
+
+
         </div>
     );
 };

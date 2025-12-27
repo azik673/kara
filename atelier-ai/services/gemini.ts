@@ -1,23 +1,48 @@
 
 
-import { GoogleGenAI, GenerateContentResponse, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import { ControlMaps } from '../types';
 import { translateLightAngle, translateCameraAngle } from './visualControlTranslator';
 
 // Initialize Gemini Client
-// Note: API_KEY is expected to be in process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const rawApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GEMINI || process.env.gemini;
+const apiKey = rawApiKey?.trim();
+if (!apiKey) {
+    console.error("CRITICAL: Gemini API Key is missing! Please check your environment variables (GEMINI_API_KEY, API_KEY, or GEMINI).");
+} else {
+    console.log(`[Gemini] API Key found (length: ${apiKey.length}, prefix: ${apiKey.substring(0, 4)}, suffix: ${apiKey.substring(apiKey.length - 4)})`);
+}
 
-const MODEL_NAME = 'gemini-2.5-flash-image';
-// We use 2.5-flash-image as it supports image input well and is fast for iterative design.
+const genAI = new GoogleGenerativeAI(apiKey || "");
+console.log("[Gemini] Client initialized");
 
-// Permissive Safety Settings to prevent blocking fashion sketches/mannequins
+const MODEL_NAME = 'gemini-2.5-pro';
+
+// Permissive Safety Settings
 const SAFETY_SETTINGS = [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
     { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
 ];
+
+// Adapter for backward compatibility
+const ai = {
+    models: {
+        generateContent: async (config: any) => {
+            const model = genAI.getGenerativeModel({ 
+                model: config.model || MODEL_NAME, 
+                safetySettings: config.config?.safetySettings || SAFETY_SETTINGS 
+            });
+            const parts = config.contents.parts || config.contents[0].parts;
+            const result = await model.generateContent(parts);
+            return result.response;
+        },
+        list: async () => {
+             return { models: [] }; 
+        }
+    }
+};
 
 /**
  * Helper function to retry operations with exponential backoff.
@@ -112,7 +137,10 @@ const processImage = (dataUrl: string): { mimeType: string, data: string } | nul
         const cleanUrl = dataUrl.trim();
 
         // Strict check: Must be a Data URL for an image
-        if (!cleanUrl.startsWith('data:image/')) return null;
+        if (!cleanUrl.startsWith('data:image/')) {
+            console.warn("[processImage] Rejected non-data URL:", cleanUrl.substring(0, 50) + "...");
+            return null;
+        }
 
         const commaIdx = cleanUrl.indexOf(',');
         if (commaIdx === -1) return null;
@@ -146,6 +174,157 @@ const processImage = (dataUrl: string): { mimeType: string, data: string } | nul
         return null;
     }
 };
+
+/**
+ * Analyzes an image to extract its style, lighting, and aesthetic characteristics.
+ */
+export const analyzeImageStyle = async (imageBase64: string): Promise<string> => {
+    try {
+        const processed = processImage(imageBase64);
+        if (!processed) throw new Error("Invalid image data");
+
+        const prompt = `
+            Analyze the artistic style, lighting, color palette, mood, and visual effects of this image.
+            Provide a concise but descriptive summary that can be used to replicate this style and its effects on another image.
+            Focus on:
+            - Lighting (e.g., cinematic, natural, studio, neon, low-key)
+            - Color Grading (e.g., warm, cool, pastel, vibrant, monochrome)
+            - Texture and Medium (e.g., film grain, digital art, oil painting, sharp photography)
+            - Visual Effects (e.g., bokeh, motion blur, glow, chromatic aberration, lens flares)
+            - Compositional Mood (e.g., dreamy, gritty, minimalist, chaotic)
+            
+            Output ONLY the description.
+        `.trim();
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro', safetySettings: SAFETY_SETTINGS });
+        const result = await retryOperation(() => model.generateContent([
+            prompt,
+            { inlineData: { mimeType: processed.mimeType, data: processed.data } }
+        ]));
+
+        const response = await result.response;
+        const text = response.text();
+        return text.trim();
+    } catch (error) {
+        console.error("Style analysis failed:", error);
+        throw error;
+    }
+};
+
+/**
+ * Applies a specific style description to a target image.
+ */
+export const applyImageStyle = async (
+    targetImageBase64: string, 
+    styleDescription: string
+): Promise<string> => {
+    try {
+        const processed = processImage(targetImageBase64);
+        if (!processed) throw new Error("Invalid image data");
+
+        const prompt = `
+            Transform this image to match the following style description:
+            "${styleDescription}"
+            
+            INSTRUCTIONS:
+            1. Keep the original subject, composition, and content EXACTLY as they are.
+            2. ONLY change the lighting, colors, and texture to match the described style.
+            3. The result must look like it was originally captured or created in that style.
+            4. Maintain high fidelity and photorealism (unless the style is artistic).
+        `.trim();
+
+        // Use a model capable of image generation
+        // Based on available models: models/gemini-2.5-flash-image
+        const model = genAI.getGenerativeModel({ model: 'models/gemini-2.5-flash-image', safetySettings: SAFETY_SETTINGS });
+        
+        const result = await retryOperation(() => model.generateContent([
+            prompt,
+            { inlineData: { mimeType: processed.mimeType, data: processed.data } }
+        ]));
+
+        const response = await result.response;
+        
+        // Check for image parts in the response
+        // Gemini Image Generation usually returns inlineData or a specific structure
+        // If it returns text, it failed to generate an image.
+        
+        if (response.candidates && response.candidates[0].content && response.candidates[0].content.parts) {
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData && part.inlineData.mimeType.startsWith('image/')) {
+                    return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                }
+            }
+        }
+        
+        // Fallback: Check if text contains a URL (less likely for this API but possible)
+        const text = response.text();
+        if (text) {
+             console.warn("Gemini returned text instead of image:", text);
+             // If the text is just a description, we can't use it as an image.
+             throw new Error("AI returned text description instead of an image. The model might not support image generation with this input.");
+        }
+
+        throw new Error("No image generated in response.");
+    } catch (error) {
+        console.error("Style application failed:", error);
+        throw error;
+    }
+};
+
+
+
+/**
+ * Ensures an image string is a valid Base64 Data URL.
+ * Converts Blob URLs or other formats if necessary.
+ */
+const ensureBase64 = async (imageUrl: string): Promise<string | null> => {
+    if (!imageUrl) return null;
+
+    // Already a Data URL?
+    if (imageUrl.startsWith('data:image/')) {
+        return imageUrl;
+    }
+
+    if (!isValidImageSource(imageUrl)) {
+        console.warn(`[ensureBase64] Invalid image source ignored: ${imageUrl.substring(0, 50)}...`);
+        return null;
+    }
+
+    // Handle Blob URLs or HTTP URLs
+    try {
+        console.log(`[ensureBase64] Converting URL to Base64: ${imageUrl.substring(0, 50)}...`);
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const result = reader.result as string;
+                if (result && result.startsWith('data:image/')) {
+                    resolve(result);
+                } else {
+                    console.error("[ensureBase64] Failed to convert to valid Data URL");
+                    resolve(null);
+                }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error("[ensureBase64] Conversion failed:", error);
+        return null;
+    }
+};
+
+/**
+ * Checks if a string is a valid image source (Data URL, Blob URL, or HTTP URL).
+ */
+const isValidImageSource = (str: string | null | undefined): boolean => {
+    if (!str || typeof str !== 'string') return false;
+    const s = str.trim();
+    return s.startsWith('data:image/') || s.startsWith('blob:') || s.startsWith('http://') || s.startsWith('https://');
+};
+
 
 
 /**
@@ -234,7 +413,8 @@ export const extractCoherenceAttributes = async (
     focusPrompt?: string
 ): Promise<any> => {
     try {
-        const imgData = processImage(referenceImage);
+        const base64Ref = await ensureBase64(referenceImage);
+        const imgData = base64Ref ? processImage(base64Ref) : null;
         if (!imgData) throw new Error("Invalid image for coherence extraction");
 
         const settings = parseCoherencePrompt(focusPrompt || "");
@@ -296,7 +476,8 @@ export const analyzeFabricPhysics = async (
     poseData: any
 ): Promise<any> => {
     try {
-        const imgData = processImage(fabricImage);
+        const base64Fabric = await ensureBase64(fabricImage);
+        const imgData = base64Fabric ? processImage(base64Fabric) : null;
         if (!imgData) throw new Error("Invalid fabric image");
 
         const instructions = `
@@ -358,8 +539,9 @@ export const inferAutoPhysics = async (
 ): Promise<any> => {
     try {
         const parts: any[] = [];
-        if (referenceImage) {
-            const imgData = processImage(referenceImage);
+        if (referenceImage && isValidImageSource(referenceImage)) {
+            const base64Ref = await ensureBase64(referenceImage);
+            const imgData = base64Ref ? processImage(base64Ref) : null;
             if (imgData) parts.push({ inlineData: { mimeType: imgData.mimeType, data: imgData.data } });
         }
 
@@ -396,8 +578,21 @@ export const inferAutoPhysics = async (
 
         const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) return null; // Fail silently if model refuses, fall back to defaults
+
         const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(jsonStr);
+
+        // Check if response looks like JSON before parsing
+        if (!jsonStr.startsWith('{') && !jsonStr.startsWith('[')) {
+            console.warn("Auto Physics Inference: Gemini returned non-JSON response:", jsonStr.substring(0, 100));
+            return null;
+        }
+
+        try {
+            return JSON.parse(jsonStr);
+        } catch (parseError) {
+            console.warn("Auto Physics Inference: JSON parse failed:", parseError);
+            return null;
+        }
     } catch (error) {
         console.warn("Auto Physics Inference failed:", error);
         return null;
@@ -412,7 +607,8 @@ export const analyzeEnvironmentLighting = async (
     envImage: string
 ): Promise<any> => {
     try {
-        const imgData = processImage(envImage);
+        const base64Env = await ensureBase64(envImage);
+        const imgData = base64Env ? processImage(base64Env) : null;
         if (!imgData) throw new Error("Invalid environment image");
 
         const instructions = `
@@ -500,7 +696,11 @@ const detectPoseTransferIntent = (prompt: string): 'from_reference' | 'from_main
         /pose.*from.*reference/i,
         /reference.*pose/i,
         /copy.*pose.*reference/i,
-        /paste.*pose.*from.*ref/i
+        /paste.*pose.*from.*ref/i,
+        /change.*pose.*based.*on.*ref/i,
+        /match.*pose.*of.*ref/i,
+        /adopt.*pose.*of.*ref/i,
+        /take.*pose.*from.*ref/i
     ];
 
     for (const pattern of refPoseKeywords) {
@@ -517,6 +717,137 @@ const detectPoseTransferIntent = (prompt: string): 'from_reference' | 'from_main
  * HARDENED AGAINST REFUSALS: Uses Strict Command Mode prompting.
  */
 /**
+ * Detects user intent for identity swap from text prompt.
+ */
+const detectIdentitySwapIntent = (prompt: string): boolean => {
+    if (!prompt) return false;
+    const lowerPrompt = prompt.toLowerCase();
+    const keywords = [
+        'swap identity', 'change identity', 'replace identity',
+        'swap face', 'change face', 'replace face',
+        'swap model', 'change model', 'replace model',
+        'switch person', 'switch model', 'new model',
+        'use face from ref', 'use identity from ref'
+    ];
+    return keywords.some(k => lowerPrompt.includes(k));
+};
+
+/**
+ * Detects user intent for Ghost Mannequin / No Person from text prompt.
+ */
+const detectGhostMannequinIntent = (prompt: string): boolean => {
+    if (!prompt) return false;
+    const lowerPrompt = prompt.toLowerCase();
+    const keywords = [
+        'ghost mannequin', 'invisible mannequin',
+        'without person', 'no person', 'remove person',
+        'without model', 'no model', 'remove model',
+        'only clothes', 'only garment', 'flat lay',
+        'clothing only', 'garment only'
+    ];
+    return keywords.some(k => lowerPrompt.includes(k));
+};
+
+
+/**
+ * EXTRACT GARMENT DATA (Background Process)
+ * Automatically analyzes the main subject to lock clothing.
+ */
+export const extractGarmentData = async (
+    imageUrl: string
+): Promise<any> => {
+    try {
+        const base64Img = await ensureBase64(imageUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
+        if (!imgData) throw new Error("Invalid image for garment extraction");
+
+        const instructions = `
+            SYSTEM: GARMENT EXTRACTION ENGINE.
+            TASK: Analyze the image and extract the clothing/garment details.
+            
+            OUTPUT FORMAT (JSON ONLY):
+            {
+                "garment_data": {
+                    "type": "Fashion Analysis",
+                    "description": "Detailed description of the clothing, fabric, cut, and styling.",
+                    "category": "e.g. Dress, Suit, Casual",
+                    "details": "List of key details (e.g. 'ruffled sleeves, silk texture, blue color')"
+                }
+            }
+        `;
+
+        const response = await retryOperation<GenerateContentResponse>(() => ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: imgData.mimeType, data: imgData.data } },
+                    { text: instructions }
+                ]
+            },
+            config: { safetySettings: SAFETY_SETTINGS }
+        }));
+
+        const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("Failed to extract garment data");
+        const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(jsonStr);
+
+    } catch (error) {
+        console.warn("Garment Extraction Failed (Non-fatal):", error);
+        return null;
+    }
+};
+
+/**
+ * EXTRACT IDENTITY DATA (Background Process)
+ * Automatically analyzes the reference object to lock identity.
+ */
+export const extractIdentityData = async (
+    imageUrl: string
+): Promise<any> => {
+    try {
+        const base64Img = await ensureBase64(imageUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
+        if (!imgData) throw new Error("Invalid image for identity extraction");
+
+        const instructions = `
+            SYSTEM: IDENTITY EXTRACTION ENGINE.
+            TASK: Analyze the image and extract the person's identity features.
+            
+            OUTPUT FORMAT (JSON ONLY):
+            {
+                "identity_data": {
+                    "type": "Face/Identity Analysis",
+                    "description": "Detailed description of the face, ethnicity, age, hair, and key features.",
+                    "gender": "Inferred gender",
+                    "key_features": "List of distinctive features (e.g. 'high cheekbones, curly hair, glasses')"
+                }
+            }
+        `;
+
+        const response = await retryOperation<GenerateContentResponse>(() => ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: imgData.mimeType, data: imgData.data } },
+                    { text: instructions }
+                ]
+            },
+            config: { safetySettings: SAFETY_SETTINGS }
+        }));
+
+        const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("Failed to extract identity data");
+        const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(jsonStr);
+
+    } catch (error) {
+        console.warn("Identity Extraction Failed (Non-fatal):", error);
+        return null;
+    }
+};
+
+/**
  * EXTRACT POSE DATA (Background Process)
  * Automatically analyzes the main subject to lock pose.
  */
@@ -524,7 +855,8 @@ export const extractPoseData = async (
     imageUrl: string
 ): Promise<any> => {
     try {
-        const imgData = processImage(imageUrl);
+        const base64Img = await ensureBase64(imageUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
         if (!imgData) throw new Error("Invalid image for pose extraction");
 
         // Check Cache (In-memory simple cache could be added here, relying on nodeEngine cache for now)
@@ -570,6 +902,174 @@ export const extractPoseData = async (
  * Generates/Edits a design based on sketches, brush strokes, and prompt.
  * HARDENED AGAINST REFUSALS: Uses Strict Command Mode prompting.
  */
+/**
+ * Flattens a transparent mask onto a black background.
+ * Ensures the mask is strictly Black (Keep) / White (Change).
+ */
+const flattenMask = async (maskUrl: string): Promise<string | null> => {
+    if (!maskUrl) return null;
+
+    try {
+        console.log("[flattenMask] Flattening mask...");
+        return new Promise((resolve) => {
+            let isResolved = false;
+            const img = new Image();
+
+            // Timeout to prevent hanging
+            const timer = setTimeout(() => {
+                if (!isResolved) {
+                    console.warn("[flattenMask] Timeout waiting for image load. Fallback to original.");
+                    isResolved = true;
+                    resolve(maskUrl);
+                }
+            }, 3000);
+
+            img.onload = () => {
+                if (isResolved) return;
+                clearTimeout(timer);
+                isResolved = true;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    console.warn("[flattenMask] Failed to get context, falling back to original mask.");
+                    resolve(maskUrl); // Fallback
+                    return;
+                }
+
+                // 1. Fill with Black (Keep)
+                ctx.fillStyle = 'black';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // 2. Draw Mask (White strokes) on top
+                ctx.drawImage(img, 0, 0);
+
+                const flattened = canvas.toDataURL('image/png');
+                console.log("[flattenMask] Success. Length:", flattened.length);
+                resolve(flattened);
+            };
+
+            img.onerror = (err) => {
+                if (isResolved) return;
+                clearTimeout(timer);
+                isResolved = true;
+                console.warn("[flattenMask] Image load failed, falling back to original mask.", err);
+                resolve(maskUrl); // Fallback
+            };
+
+            img.src = maskUrl;
+        });
+    } catch (e) {
+        console.error("Error flattening mask:", e);
+        return maskUrl; // Fallback
+    }
+};
+
+// Helper to load image for composition
+const loadImage = (src: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        // For Data URIs, crossOrigin isn't strictly needed but good practice for canvas export if mixed
+        if (!src.startsWith('data:')) {
+            img.crossOrigin = "Anonymous";
+        }
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+    });
+};
+
+const compositeOutput = async (mainImage: string, generatedImage: string, maskImage: string): Promise<string> => {
+    try {
+        console.log("[compositeOutput] Starting client-side composition...");
+
+        const [imgMain, imgGen, imgMask] = await Promise.all([
+            loadImage(mainImage),
+            loadImage(generatedImage),
+            loadImage(maskImage)
+        ]);
+
+        const width = imgMain.width;
+        const height = imgMain.height;
+        console.log(`[compositeOutput] Dimensions: ${width}x${height}`);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error("Failed to get composition context");
+
+        // Draw images to offscreen canvases to get pixel data
+        const mainCanvas = document.createElement('canvas');
+        mainCanvas.width = width;
+        mainCanvas.height = height;
+        const mainCtx = mainCanvas.getContext('2d');
+        if (!mainCtx) throw new Error("Failed to get main context");
+        mainCtx.drawImage(imgMain, 0, 0, width, height);
+        const mainData = mainCtx.getImageData(0, 0, width, height).data;
+
+        const genCanvas = document.createElement('canvas');
+        genCanvas.width = width;
+        genCanvas.height = height;
+        const genCtx = genCanvas.getContext('2d');
+        if (!genCtx) throw new Error("Failed to get gen context");
+        genCtx.drawImage(imgGen, 0, 0, width, height);
+        const genData = genCtx.getImageData(0, 0, width, height); // We will modify this
+        const genPixels = genData.data;
+
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = width;
+        maskCanvas.height = height;
+        const maskCtx = maskCanvas.getContext('2d');
+        if (!maskCtx) throw new Error("Failed to get mask context");
+        maskCtx.drawImage(imgMask, 0, 0, width, height);
+        const maskPixels = maskCtx.getImageData(0, 0, width, height).data;
+
+        // PIXEL-LEVEL COMPOSITION WITH ALPHA BLENDING
+        // Iterate through all pixels
+        for (let i = 0; i < maskPixels.length; i += 4) {
+            // Calculate Alpha from Mask Brightness (0-255 -> 0.0-1.0)
+            // We assume grayscale mask, so R=G=B. Using Red channel is sufficient.
+            // White (255) = Fully Active (Use Gen)
+            // Black (0) = Fully Protected (Use Main)
+            const maskVal = maskPixels[i]; 
+            const alpha = maskVal / 255;
+
+            if (alpha === 0) {
+                // Optimization: Fully Protected -> Copy Main
+                genPixels[i] = mainData[i];
+                genPixels[i + 1] = mainData[i + 1];
+                genPixels[i + 2] = mainData[i + 2];
+                genPixels[i + 3] = mainData[i + 3];
+            } else if (alpha === 1) {
+                // Optimization: Fully Active -> Keep Gen (No change needed)
+            } else {
+                // BLENDING: Linear Interpolation
+                // Out = Main * (1 - alpha) + Gen * alpha
+                const invAlpha = 1 - alpha;
+                
+                genPixels[i] = (mainData[i] * invAlpha) + (genPixels[i] * alpha);         // R
+                genPixels[i + 1] = (mainData[i + 1] * invAlpha) + (genPixels[i + 1] * alpha); // G
+                genPixels[i + 2] = (mainData[i + 2] * invAlpha) + (genPixels[i + 2] * alpha); // B
+                // Alpha channel blending (usually we want full opacity if both are opaque)
+                genPixels[i + 3] = (mainData[i + 3] * invAlpha) + (genPixels[i + 3] * alpha); 
+            }
+        }
+
+        // Put the composited data onto the final canvas
+        ctx.putImageData(genData, 0, 0);
+
+        console.log("[compositeOutput] Composition complete.");
+        return canvas.toDataURL('image/png');
+
+    } catch (e) {
+        console.error("[compositeOutput] Composition failed, returning raw generation.", e);
+        return generatedImage; // Fallback to raw generation
+    }
+};
+
 export const enhanceSketch = async (
     mainImage: string | null,
     refImage: string | null,
@@ -581,56 +1081,63 @@ export const enhanceSketch = async (
         // Visual Control Params
         visualLightData?: any;
         visualCameraData?: any;
+        isPoseLocked?: boolean;
+        isClothingReplacement?: boolean;
+        skipComposition?: boolean; // New flag to bypass client-side blending
     },
     maskImage?: string | null,
     autoPoseData?: any,
     autoPhysicsData?: any,
     coherenceData?: any,
-    controlMaps?: ControlMaps
+    controlMaps?: ControlMaps,
+    poseControlImage?: string | null // New param for ControlNet Skeleton
 ): Promise<string> => {
     try {
-        console.log("[enhanceSketch] Starting generation...");
+        console.log("[enhanceSketch] Starting generation... (v2.3 - Dedicated Inpainting)");
         const parts: any[] = [];
 
-        // Process Images
-        const processedMain = mainImage ? processImage(mainImage) : null;
-        const processedRef = refImage ? processImage(refImage) : null;
-        const processedMask = maskImage ? processImage(maskImage) : null;
+        // Flatten Mask if present to ensure Black/White strictness for AI
+        const flatMask = (maskImage && isValidImageSource(maskImage)) ? await flattenMask(maskImage) : null;
 
-        if (mainImage && !processedMain) console.warn("Gemini Service: Main Image invalid/unsupported.");
-        if (refImage && !processedRef) console.warn("Gemini Service: Ref Image invalid/unsupported.");
-        if (maskImage && !processedMask) console.warn("Gemini Service: Mask Image invalid/unsupported.");
+        // Process Images
+        const [base64Main, base64Ref, base64Mask] = await Promise.all([
+            (mainImage && isValidImageSource(mainImage)) ? ensureBase64(mainImage) : Promise.resolve(null),
+            (refImage && isValidImageSource(refImage)) ? ensureBase64(refImage) : Promise.resolve(null),
+            // Prioritize the original maskImage for base64Mask if it exists, otherwise use the flattened one
+            (maskImage && isValidImageSource(maskImage)) ? ensureBase64(maskImage) :
+                (flatMask && isValidImageSource(flatMask)) ? ensureBase64(flatMask) : Promise.resolve(null)
+        ]);
+
+
+        const processedMain = base64Main ? processImage(base64Main) : null;
+        const processedRef = base64Ref ? processImage(base64Ref) : null;
+        const processedMask = base64Mask ? processImage(base64Mask) : null;
+
+        // Only warn if image was provided but failed to process (not just null/empty)
+        if (mainImage && isValidImageSource(mainImage) && !processedMain) console.warn("Gemini Service: Main Image invalid/unsupported.");
+        if (refImage && isValidImageSource(refImage) && !processedRef) console.warn("Gemini Service: Ref Image invalid/unsupported.");
+        if (maskImage && isValidImageSource(maskImage) && !processedMask) console.warn("Gemini Service: Mask Image invalid/unsupported.");
 
         // Process Control Maps
-        const processedShadow = controlMaps?.shadowMap ? processImage(controlMaps.shadowMap) : null;
-        const processedNormal = controlMaps?.normalMap ? processImage(controlMaps.normalMap) : null;
-        const processedDepth = controlMaps?.depthMap ? processImage(controlMaps.depthMap) : null;
+        const [base64Shadow, base64Normal, base64Depth] = await Promise.all([
+            controlMaps?.shadowMap ? ensureBase64(controlMaps.shadowMap) : Promise.resolve(null),
+            controlMaps?.normalMap ? ensureBase64(controlMaps.normalMap) : Promise.resolve(null),
+            controlMaps?.depthMap ? ensureBase64(controlMaps.depthMap) : Promise.resolve(null)
+        ]);
+
+        const processedShadow = base64Shadow ? processImage(base64Shadow) : null;
+        const processedNormal = base64Normal ? processImage(base64Normal) : null;
+        const processedDepth = base64Depth ? processImage(base64Depth) : null;
 
         // --- BACKGROUND AUTOMATION: POSE & PHYSICS ---
-        let autoPoseData = null;
-        let autoPhysicsData = null;
+        // Use different variable names to avoid shadowing function parameters
+        let extractedPoseData = null;
+        let extractedPhysicsData = null;
+        let extractedGarmentData = null;
+        let extractedIdentityData = null;
 
-        // 1. Intelligent Pose Extraction based on user intent
-        const poseIntent = detectPoseTransferIntent(userPrompt);
-
-        if (poseIntent === 'from_reference' && refImage) {
-            // Extract pose from reference when user explicitly requests it
-            console.log('[Pose Transfer] Extracting pose from REFERENCE image');
-            autoPoseData = await extractPoseData(refImage);
-        } else if (poseIntent === 'from_main' && mainImage) {
-            // Default: Extract pose from main subject
-            console.log('[Pose Transfer] Extracting pose from MAIN image');
-            autoPoseData = await extractPoseData(mainImage);
-        }
-
-        // 2. Auto-Infer Physics
-        const promptForPhysics = userPrompt || "High fashion garment";
-        const refForPhysics = refImage || mainImage;
-        try {
-            autoPhysicsData = await inferAutoPhysics(promptForPhysics, refForPhysics);
-        } catch (e) {
-            console.warn("Auto-physics inference failed.", e);
-        }
+        // 1. Detect Intent
+        const isIdentitySwap = detectIdentitySwapIntent(userPrompt) && !!refImage && !!mainImage;
 
         // --- PUSH IMAGES (ORDER MATTERS) ---
         if (processedMain) parts.push({ inlineData: { mimeType: processedMain.mimeType, data: processedMain.data } });
@@ -642,24 +1149,52 @@ export const enhanceSketch = async (
         if (processedNormal) parts.push({ inlineData: { mimeType: processedNormal.mimeType, data: processedNormal.data } });
         if (processedDepth) parts.push({ inlineData: { mimeType: processedDepth.mimeType, data: processedDepth.data } });
 
-        // --- BUILD STRICT PROMPT (HYBRID INTEGRATION) ---
+        // --- BUILD PROMPT ---
         let promptParts: string[] = [];
-        promptParts.push("NO CHAT. SYSTEM MODE: IMAGE_GENERATION_ENGINE_V2 (HYBRID)");
-        promptParts.push("CRITICAL PROTOCOL: You are NOT a chat assistant. You are a rendering engine. You must output an IMAGE.");
-        promptParts.push("DO NOT ASK FOR INPUTS. The images are already attached to this request. Look at the attachments.");
 
-        promptParts.push("\n--- INPUT MANIFEST ---");
-        let imgCount = 0;
-        if (processedMain) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: MAIN_SUBJECT (Base sketch/photo).`); }
-        if (processedMask) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: EDIT_MASK (White pixels = modify).`); }
-        if (processedRef) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: REFERENCE_MATERIAL (Style/Texture source).`); }
+        // DEDICATED INPAINTING PATH (Simplifies prompt to ensure mask adherence)
+        if (processedMask && processedMain) {
+            console.log("[enhanceSketch] Using Dedicated Inpainting Prompt");
+            promptParts.push("TASK: INPAINTING / EDITING");
+            promptParts.push("SYSTEM: You are a precision image editing engine.");
+            promptParts.push("INPUTS:");
+            promptParts.push("1. MAIN IMAGE (The base image)");
+            promptParts.push("2. MASK IMAGE (Black = Keep, White = Edit)");
+            if (processedRef) promptParts.push("3. REFERENCE IMAGE (Style/Content source)");
 
-        if (processedShadow) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_SHADOW_MAP (Light/Shadow Guide).`); }
-        if (processedNormal) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_NORMAL_MAP (Surface Orientation).`); }
-        if (processedDepth) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_DEPTH_MAP (Camera Distance/Perspective).`); }
+            promptParts.push("\n--- STRICT INSTRUCTION ---");
+            promptParts.push("1. LOOK at the MASK IMAGE.");
+            promptParts.push("2. IDENTIFY the WHITE pixels. This is the 'Active Area'.");
+            promptParts.push("3. IDENTIFY the BLACK pixels. This is the 'Protected Area'.");
+            promptParts.push("4. GENERATE content ONLY inside the Active Area (White).");
+            promptParts.push("5. COPY EXACTLY the Protected Area (Black) from the MAIN IMAGE. Do not change a single pixel in the black area.");
 
-        promptParts.push("\n--- HYBRID GENERATION PROTOCOL ---");
-        promptParts.push("You must execute this generation in two logical phases to resolve conflicts between Style and Structure.");
+            promptParts.push("\n--- EDITING GOAL ---");
+            promptParts.push(`PROMPT: "${userPrompt}"`);
+            if (processedRef) promptParts.push("Use the REFERENCE IMAGE as the source material for the edit.");
+
+            promptParts.push("\n--- OUTPUT ---");
+            promptParts.push("Return the fully composited image.");
+
+        } else {
+            // STANDARD HYBRID PROTOCOL (For full generation/style transfer)
+            promptParts.push("NO CHAT. SYSTEM MODE: IMAGE_GENERATION_ENGINE_V2 (HYBRID)");
+            promptParts.push("CRITICAL PROTOCOL: You are NOT a chat assistant. You are a rendering engine. You must output an IMAGE.");
+            promptParts.push("DO NOT ASK FOR INPUTS. The images are already attached to this request. Look at the attachments.");
+
+            promptParts.push("\n--- INPUT MANIFEST ---");
+            let imgCount = 0;
+            if (processedMain) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: MAIN_SUBJECT (Base sketch/photo).`); }
+            if (processedMask) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: EDIT_MASK (White pixels = modify).`); }
+            if (processedRef) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: REFERENCE_MATERIAL (Style/Texture source).`); }
+
+            if (processedShadow) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_SHADOW_MAP (Light/Shadow Guide).`); }
+            if (processedNormal) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_NORMAL_MAP (Surface Orientation).`); }
+            if (processedDepth) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_DEPTH_MAP (Camera Distance/Perspective).`); }
+
+            promptParts.push("\n--- HYBRID GENERATION PROTOCOL ---");
+            promptParts.push("You must execute this generation in two logical phases to resolve conflicts between Style and Structure.");
+        }
 
         // VISUAL CONTROLS INJECTION (MOVED EARLY FOR PRIORITY)
         if (config?.visualLightData) {
@@ -670,7 +1205,7 @@ export const enhanceSketch = async (
                 promptParts.push(`\n>>> CRITICAL MULTI-LIGHT SETUP <<<`);
                 promptParts.push(`LIGHTING TYPE: Professional ${lights.length}-Point Lighting`);
 
-                lights.forEach((light, index) => {
+                lights.forEach((light: any, index: number) => {
                     const lightNum = index + 1;
                     const lightName = lightNum === 1 ? 'KEY LIGHT' : lightNum === 2 ? 'FILL LIGHT' : 'RIM LIGHT';
                     promptParts.push(`\nLIGHT ${lightNum} (${lightName}): ${light.preset || 'Custom lighting'}`);
@@ -724,31 +1259,75 @@ export const enhanceSketch = async (
             promptParts.push(`FRAMING: ${cameraPrompt}`);
         }
 
-        // --- CRITICAL POSE LOCK (MOVED EARLY FOR MAXIMUM PRIORITY) ---
-        if (autoPoseData && autoPoseData.pose_data) {
-            const poseSource = poseIntent === 'from_reference' ? 'REFERENCE_MATERIAL' : 'MAIN_SUBJECT';
+        // --- IDENTITY SWAP LOGIC (HIGHEST PRIORITY) ---
+        if (isIdentitySwap && extractedPoseData && extractedGarmentData && extractedIdentityData) {
+            promptParts.push(`\n>>> CRITICAL: IDENTITY SWAP MODE ACTIVATED <<<`);
+            promptParts.push(`STATUS: STRUCTURAL & IDENTITY REPLACEMENT`);
 
-            promptParts.push(`\n>>> CRITICAL POSE TRANSFER OVERRIDE <<<`);
-            promptParts.push(`STATUS: HARD LOCK - NON-NEGOTIABLE`);
-            promptParts.push(`POSE SOURCE: ${poseSource}`);
-            promptParts.push(`POSE DESCRIPTION: ${autoPoseData.pose_data.description}`);
+            promptParts.push(`\n--- STRUCTURAL MASTER (FROM MAIN SUBJECT) ---`);
+            promptParts.push(`POSE: ${extractedPoseData.pose_data?.description || 'Match Main Subject Pose'}`);
+            promptParts.push(`GARMENT: ${extractedGarmentData.garment_data?.description || 'Match Main Subject Clothing'}`);
+            promptParts.push(`MANDATE: You MUST preserve the exact pose, body structure, and clothing of the MAIN_SUBJECT.`);
 
-            if (poseIntent === 'from_reference') {
-                // User wants to copy pose FROM reference TO main subject
-                promptParts.push(`CRITICAL MANDATE: You MUST apply the EXACT pose from the REFERENCE_MATERIAL to the subject in MAIN_SUBJECT.`);
-                promptParts.push(`TRANSFER INSTRUCTION: Copy the body position, limb angles, and gesture from REFERENCE_MATERIAL and apply to the main subject.`);
-                promptParts.push(`PRESERVE FROM MAIN: Only keep the subject's identity, clothing, and styling from MAIN_SUBJECT.`);
-                promptParts.push(`CHANGE FROM REFERENCE: Apply the complete body pose, stance, and positioning from REFERENCE_MATERIAL.`);
-                promptParts.push(`DO NOT: Keep the original pose from MAIN_SUBJECT. The pose MUST match REFERENCE_MATERIAL.`);
-            } else {
-                // Default: preserve main subject's pose
-                promptParts.push(`CRITICAL MANDATE: You MUST preserve the EXACT body position, limb angles, and gesture of the MAIN_SUBJECT.`);
-                promptParts.push(`DO NOT ALTER: Head position, arm position, leg position, torso orientation, hand gestures, facial direction.`);
-                promptParts.push(`ONLY MODIFY: Add the requested object/accessory WITHOUT changing the underlying pose.`);
+            promptParts.push(`\n--- IDENTITY MASTER (FROM REFERENCE) ---`);
+            promptParts.push(`IDENTITY: ${extractedIdentityData.identity_data?.description || 'Match Reference Identity'}`);
+            promptParts.push(`FEATURES: ${extractedIdentityData.identity_data?.key_features || 'Match Reference Features'}`);
+            promptParts.push(`MANDATE: You MUST replace the face and identity with the person from REFERENCE_MATERIAL.`);
+
+            promptParts.push(`\n--- SYNTHESIS INSTRUCTION ---`);
+            promptParts.push(`RESULT: Generate the person from REFERENCE_MATERIAL standing in the pose of MAIN_SUBJECT wearing the clothes of MAIN_SUBJECT.`);
+            promptParts.push(`NEGATIVE CONSTRAINT: Do NOT use the pose or clothing from REFERENCE_MATERIAL. Do NOT use the face from MAIN_SUBJECT.`);
+
+        } else {
+            // --- STANDARD POSE LOCK ---
+            // --- STANDARD POSE LOCK (TEXT BASED) ---
+            if (extractedPoseData && extractedPoseData.pose_data) {
+                // Only apply if Pose Lock is enabled (default: true)
+                let isPoseLocked = config?.isPoseLocked ?? true;
+
+                // GHOST MANNEQUIN OVERRIDE
+                const isGhostMannequin = detectGhostMannequinIntent(userPrompt);
+                if (isGhostMannequin) {
+                    console.log('[Ghost Mannequin] Mode Activated - Pose Lock Disabled');
+                    isPoseLocked = false;
+                    promptParts.push(`\n>>> GHOST MANNEQUIN MODE <<<`);
+                    promptParts.push(`ACTION: Render the clothing on an invisible mannequin.`);
+                    promptParts.push(`CONSTRAINT: Do NOT render a human body, face, or skin.`);
+                    promptParts.push(`DETAIL: Show the inside of the collar/waistband where the body would be.`);
+                }
+
+                if (isPoseLocked) {
+                    const poseSource = 'MAIN_SUBJECT';
+
+                    promptParts.push(`\n>>> CRITICAL POSE TRANSFER OVERRIDE <<<`);
+                    promptParts.push(`STATUS: HARD LOCK - NON-NEGOTIABLE`);
+                    promptParts.push(`POSE SOURCE: ${poseSource}`);
+                    promptParts.push(`POSE DESCRIPTION: ${extractedPoseData.pose_data.description}`);
+
+                    // Default: preserve main subject's pose
+                    promptParts.push(`CRITICAL MANDATE: You MUST preserve the EXACT body position, limb angles, and gesture of the MAIN_SUBJECT.`);
+                    promptParts.push(`DO NOT ALTER: Head position, arm position, leg position, torso orientation, hand gestures, facial direction.`);
+                    promptParts.push(`ONLY MODIFY: Add the requested object/accessory WITHOUT changing the underlying pose.`);
+
+                    promptParts.push(`VERIFICATION: The final image MUST show the pose from ${poseSource}.`);
+                    promptParts.push(`OVERRIDE PRIORITY: This pose constraint overrides ANY pose suggestions from the text prompt.`);
+                }
+                // POSE CONTROL LOGIC
+                // If we have a Pose Skeleton (ControlNet) AND Pose Lock is ON, use it.
+                if (poseControlImage && isPoseLocked) {
+                    console.log("[Gemini] Using ControlNet Pose Skeleton");
+                    const poseData = processImage(poseControlImage);
+                    if (poseData) {
+                        parts.push({ inlineData: { mimeType: poseData.mimeType, data: poseData.data } });
+                        parts.push({ text: "CONTROLNET INSTRUCTION: Use the attached SKELETON MAP (Black background with Red/Blue limbs) to STRICTLY control the pose of the generated subject. \n1. IGNORE the pose of the original image.\n2. The skeleton map represents the REQUIRED bone structure.\n3. Red limbs are RIGHT side, Blue limbs are LEFT side.\n4. Do not hallucinate extra limbs. The output pose must match this skeleton exactly." });
+                    }
+                } else if (isPoseLocked) {
+                    // Fallback to original Pose Lock logic (Implicit)
+                    parts.push({ text: "IMPORTANT: Maintain the exact pose and composition of the main subject image." });
+                } else {
+                    parts.push({ text: "Pose is flexible. You may adjust the pose to better fit the composition or prompt." });
+                }
             }
-
-            promptParts.push(`VERIFICATION: The final image MUST show the pose from ${poseSource}.`);
-            promptParts.push(`OVERRIDE PRIORITY: This pose constraint overrides ANY pose suggestions from the text prompt.`);
         }
 
         // PHASE 1: CONCEPT ENCODING
@@ -774,62 +1353,81 @@ export const enhanceSketch = async (
         const realism = config?.realismWeight ?? 1.0;
 
         if (processedMask && processedMain) {
-            promptParts.push(`TYPE: INPAINT_EDIT`);
-            promptParts.push(`TARGET: Modify ONLY the white area of the Mask.`);
-            promptParts.push(`CONTEXT: The rest of the Main Subject MUST remain unchanged.`);
-            if (processedRef) promptParts.push(`ACTION: Transfer the REFERENCE_MATERIAL into the masked area.`);
-            else promptParts.push(`ACTION: Generate new content in the masked area.`);
-        } else if (processedRef && processedMain) {
-            promptParts.push(`TYPE: COMPOSITE_MERGE`);
-            promptParts.push(`ACTION: Apply the REFERENCE_MATERIAL onto the MAIN_SUBJECT.`);
-            promptParts.push(`BLENDING: ${(adherence * 100).toFixed(0)}% strict adherence.`);
-        } else if (processedRef && !processedMain) {
-            promptParts.push(`TYPE: STYLE_TRANSFER`);
-            promptParts.push(`ACTION: Create a new image using REFERENCE_MATERIAL as source.`);
-        } else if (processedMain) {
-            promptParts.push(`TYPE: ENHANCEMENT`);
-            promptParts.push(`ACTION: Render the MAIN_SUBJECT into a photorealistic image.`);
+            // Already handled in the dedicated path above (lines 1030+)
+            // We do NOT want to add duplicate prompt parts here.
+            // The prompt has already been constructed.
         } else {
-            promptParts.push(`TYPE: TEXT_TO_IMAGE`);
-            promptParts.push(`ACTION: Generate a high-fashion image from scratch.`);
-        }
+            // STANDARD HYBRID PROTOCOL (For full generation/style transfer)
+            promptParts.push("NO CHAT. SYSTEM MODE: IMAGE_GENERATION_ENGINE_V2 (HYBRID)");
+            promptParts.push("CRITICAL PROTOCOL: You are NOT a chat assistant. You are a rendering engine. You must output an IMAGE.");
+            promptParts.push("DO NOT ASK FOR INPUTS. The images are already attached to this request. Look at the attachments.");
 
-        // --- LIGHTING ATMOSPHERE ---
-        if (config?.visualLightData) {
-            promptParts.push(`\n--- LIGHTING ATMOSPHERE ---`);
-            promptParts.push(`Cinematic light cast on the subject, creating strong contrast and deep, soft shadows.`);
-            promptParts.push(`High dynamic range (HDR), moody and atmospheric lighting.`);
-            promptParts.push(`Volumetric light rays, professional studio quality illumination.`);
+            promptParts.push("\n--- INPUT MANIFEST ---");
+            let imgCount = 0;
+            if (processedMain) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: MAIN_SUBJECT (Base sketch/photo).`); }
+            // Mask is handled in dedicated path, but if we fall through here for some reason (e.g. no main image?), we list it.
+            if (processedMask) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: EDIT_MASK (White pixels = modify).`); }
+            if (processedRef) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: REFERENCE_MATERIAL (Style/Texture source).`); }
+
+            // Pose guide attachment removed
+
+            if (processedShadow) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_SHADOW_MAP (Light/Shadow Guide).`); }
+            if (processedNormal) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_NORMAL_MAP (Surface Orientation).`); }
+            if (processedDepth) { imgCount++; promptParts.push(`[ATTACHMENT ${imgCount}]: FORCED_DEPTH_MAP (Camera Distance/Perspective).`); }
+
+            promptParts.push("\n--- HYBRID GENERATION PROTOCOL ---");
+            promptParts.push("You must execute this generation in two logical phases to resolve conflicts between Style and Structure.");
         }
 
         // --- CAMERA COMPOSITION ---
         if (config?.visualCameraData) {
-            promptParts.push(`\n--- CAMERA COMPOSITION ---`);
-            promptParts.push(`The background is softly blurred (shallow depth of field), focusing entirely on the subject.`);
+            promptParts.push(`\n-- - CAMERA COMPOSITION-- - `);
+            promptParts.push(`The background is softly blurred(shallow depth of field), focusing entirely on the subject.`);
             promptParts.push(`Professional framing and composition.`);
         }
 
         // --- PBR FABRIC PHYSICS ---
-        if (autoPhysicsData && autoPhysicsData.fabric_physics) {
-            promptParts.push(`\n--- PBR FABRIC PHYSICS ---`);
-            promptParts.push(`MATERIAL WEIGHT: ${autoPhysicsData.fabric_physics.weight_class}`);
-            promptParts.push(`DRAPE LOGIC: ${autoPhysicsData.fabric_physics.description}`);
+        if (extractedPhysicsData && extractedPhysicsData.fabric_physics) {
+            promptParts.push(`\n-- - PBR FABRIC PHYSICS-- - `);
+            promptParts.push(`MATERIAL WEIGHT: ${extractedPhysicsData.fabric_physics.weight_class} `);
+            promptParts.push(`DRAPE LOGIC: ${extractedPhysicsData.fabric_physics.description} `);
         }
 
-        promptParts.push(`\n--- TECHNICAL QUALITY SPECIFICATIONS ---`);
-        promptParts.push(`QUALITY: Photorealistic, 8K resolution, highly detailed texture, sharp focus, professionally color-graded.`);
+        promptParts.push(`\n-- - TECHNICAL QUALITY SPECIFICATIONS-- - `);
+        promptParts.push(`QUALITY: Photorealistic, 8K resolution, highly detailed texture, sharp focus, professionally color - graded.`);
         promptParts.push(`RENDERING: Volumetric light, rendered in Octane Render quality, using Sony A7R IV camera simulation.`);
         promptParts.push(`STYLE: High Fashion Editorial, professional photography, magazine quality.`);
         promptParts.push(`REALISM WEIGHT: ${(realism * 100).toFixed(0)}%.`);
 
-        promptParts.push(`\n--- NEGATIVE CONSTRAINTS (AVOID) ---`);
+        promptParts.push(`\n-- - NEGATIVE CONSTRAINTS(AVOID)-- - `);
         promptParts.push(`DO NOT INCLUDE: Ugly, tiling, poorly drawn, out of frame, blurry, low resolution, watermark, amateur quality.`);
         promptParts.push(`DO NOT INCLUDE: Low quality shadows, harsh reflection, oversaturated colors, noise, artifacts.`);
         promptParts.push(`DO NOT INCLUDE: Distorted proportions, unrealistic lighting, flat lighting, muddy colors.`);
 
-        promptParts.push(`\n--- FINAL OUTPUT MANDATE ---`);
+        // === CLOTHING REPLACEMENT MODE OVERRIDE (HIGHEST PRIORITY) ===
+        // This must be at the END to override all previous instructions
+        const isClothingReplacement = config?.isClothingReplacement ?? false;
+        
+        if (isClothingReplacement && refImage) {
+            promptParts.push(`\n\n ========================================`);
+            promptParts.push(`=== CLOTHING REPLACEMENT MODE OVERRIDE === `);
+            promptParts.push(`========================================`);
+            promptParts.push(`\nSTATUS: MAXIMUM PRIORITY - OVERRIDES ALL PREVIOUS INSTRUCTIONS`);
+            promptParts.push(`\nREQUIREMENTS: `);
+            promptParts.push(`1. Transfer the clothing from Reference onto the model in Main.`);
+            promptParts.push(`2. The clothing must be transferred completely and cleanly, without mixing with the existing garments on the target model.`);
+            promptParts.push(`3. The face, hairstyle, footwear, background, and all other components(besides the clothing) on Main must remain unchanged.`);
+            promptParts.push(`4. The transferred clothing should fit the target model naturally and proportionally.`);
+            promptParts.push(`\nCRITICAL OVERRIDE RULES: `);
+            promptParts.push(`- If ANY previous instruction conflicts with these requirements, IGNORE that instruction.`);
+            promptParts.push(`- Pose Lock, Identity Swap, and other modes are SECONDARY to this directive.`);
+            promptParts.push(`- This is the PRIMARY and FINAL directive.Execute it exactly.`);
+            promptParts.push(`========================================\n`);
+        }
 
-        promptParts.push(`\n--- MANDATE ---`);
+        promptParts.push(`\n-- - FINAL OUTPUT MANDATE-- - `);
+
+        promptParts.push(`\n-- - MANDATE-- - `);
         promptParts.push(`EXECUTE GENERATION IMMEDIATELY.`);
 
         parts.push({ text: promptParts.join('\n') });
@@ -843,14 +1441,39 @@ export const enhanceSketch = async (
         const candidate = response.candidates?.[0];
         if (!candidate) throw new Error("No response candidates returned.");
 
+        let generatedImage = null;
         if (candidate.content && candidate.content.parts) {
             for (const part of candidate.content.parts) {
                 if (part.inlineData && part.inlineData.data) {
-                    return `data:image/png;base64,${part.inlineData.data}`;
+                    generatedImage = `data:image/png;base64,${part.inlineData.data}`;
+                    break;
                 }
             }
         }
-        throw new Error("No image generated.");
+
+        if (!generatedImage) {
+            // Log the response to understand why generation failed
+            console.error('[enhanceSketch] No image in response.');
+            console.error('[enhanceSketch] Candidate:', candidate);
+
+            // Check if there's a text response explaining the refusal
+            const textResponse = candidate?.content?.parts?.[0]?.text;
+            if (textResponse) {
+                console.error('[enhanceSketch] Gemini returned text instead of image:', textResponse);
+                throw new Error(`Gemini refused: ${textResponse.substring(0, 200)} `);
+            }
+            throw new Error("No image generated.");
+        }
+
+        // --- POST-GENERATION COMPOSITION (STRICT MASK ADHERENCE) ---
+        // Use Base64 versions to avoid CORS issues with canvas.toDataURL
+        // base64Mask is already resolved to either maskImage or flatMask in the Promise.all above
+        if (base64Mask && base64Main && generatedImage && !config?.skipComposition) {
+            console.log("[enhanceSketch] Applying strict mask composition using Base64 inputs...");
+            return await compositeOutput(base64Main, generatedImage, base64Mask);
+        }
+
+        return generatedImage;
 
     } catch (error) {
         console.error("Gemini Enhancement Error:", error);
@@ -866,7 +1489,8 @@ export const visualizeOnModel = async (
     userPrompt: string
 ): Promise<string> => {
     try {
-        const imgData = processImage(imageDataUrl);
+        const base64Img = await ensureBase64(imageDataUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
         if (!imgData) throw new Error("Invalid image input provided for visualization");
 
         // WRAP API CALL IN RETRY LOGIC
@@ -881,15 +1505,11 @@ export const visualizeOnModel = async (
                         },
                     },
                     {
-                        text: `SYSTEM MODE: VISUALIZATION_RENDERER.
-            CRITICAL: You are a fashion rendering engine. You are NOT a chat bot.
-            
-            INPUT: The image above is a flat design or sketch.
-            TASK: Render this design worn by a realistic fashion model.
-            CONTEXT: ${userPrompt}
-            STYLE: Editorial fashion photography, 8k resolution.
-            
-            MANDATE: Output an IMAGE only. Do not speak. If the design is abstract, interpret it creatively.`
+                        text: `SYSTEM MODE: IMAGE_GENERATION_ENGINE.
+TASK: Render the attached design worn by a realistic fashion model.
+CONTEXT: ${userPrompt}
+STYLE: Editorial fashion photography, 8k resolution.
+MANDATE: Output an IMAGE only. DO NOT provide any text, descriptions, or explanations. If you cannot generate the image, return a blank response.`
                     },
                 ],
             },
@@ -913,3 +1533,123 @@ export const visualizeOnModel = async (
         throw error;
     }
 };
+/**
+ * AI REFINE: Professionally retouches an image with manual edits.
+ * Smooths edges, fixes lighting, and ensures natural fabric appearance.
+ */
+export const refineImage = async (
+    imageDataUrl: string
+): Promise<string> => {
+    try {
+        console.log("[refineImage] Starting AI Refine...");
+        const base64Img = await ensureBase64(imageDataUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
+        if (!imgData) throw new Error("Invalid image input provided for refinement");
+
+        const instructions = `SYSTEM MODE: IMAGE_GENERATION_ENGINE (REFINE).
+TASK: Recreate the attached photo with extreme hyper-realism and sub-pixel detail.
+STRICT REQUIREMENTS:
+1. ZERO CREATIVE DEVIATION: Stay 100% faithful to the original composition.
+2. MICRO-DETAIL: Render extreme sharpness in skin pores and material fibers.
+3. FULL-FRAME GREEN BACKGROUND: The background MUST be a solid, uniform green color (#00ff00) from edge to edge.
+4. PIXEL-PERFECT INTEGRATION: Smooth all manual edits at a sub-pixel level.
+MANDATE: Output an IMAGE only. DO NOT provide any text, descriptions, or explanations. If you cannot generate the image, return a blank response.`;
+
+        const response = await retryOperation<GenerateContentResponse>(() => ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: imgData.mimeType, data: imgData.data } },
+                    { text: instructions }
+                ]
+            },
+            config: { safetySettings: SAFETY_SETTINGS }
+        }));
+
+        const candidate = response.candidates?.[0];
+        if (!candidate) throw new Error("No response candidates returned.");
+
+        if (candidate.content && candidate.content.parts) {
+            for (const part of candidate.content.parts) {
+                if (part.inlineData && part.inlineData.data) {
+                    return `data:image/png;base64,${part.inlineData.data}`;
+                }
+            }
+        }
+
+        const textResponse = candidate?.content?.parts?.[0]?.text;
+        if (textResponse) {
+            throw new Error(`Gemini refused: ${textResponse.substring(0, 200)}`);
+        }
+        throw new Error("No refined image generated.");
+
+    } catch (error: any) {
+        console.error("Gemini Refine Error:", error);
+        if (error.message?.includes("429") || error.message?.toLowerCase().includes("quota")) {
+            throw new Error("Quota Exceeded: The API key has reached its usage limit. Please try again later or use a different key.");
+        }
+        throw error;
+    }
+};
+
+/**
+ * AI REALIZE: Blends layers realistically into the base image with 4K quality.
+ * Ensures graphics follow surface contours, folds, and lighting.
+ */
+export const realizeLayers = async (
+    imageDataUrl: string
+): Promise<string> => {
+    try {
+        console.log("[realizeLayers] Starting AI Realistic Blend...");
+        const base64Img = await ensureBase64(imageDataUrl);
+        const imgData = base64Img ? processImage(base64Img) : null;
+        if (!imgData) throw new Error("Invalid image input provided for realization");
+
+        const instructions = `SYSTEM MODE: IMAGE_GENERATION_ENGINE (REALIZE).
+TASK: Blend the added layers in the attached image with absolute hyper-realism.
+STRICT REQUIREMENTS:
+1. ZERO CREATIVE DEVIATION: Stay 100% faithful to the original design.
+2. MICRO-DISPLACEMENT: Warp graphics to match the sub-pixel contours of the surface.
+3. GREEN BACKGROUND: Replace any background or transparent areas with a SOLID GREEN COLOR (#00ff00).
+4. 16K ULTRA-HD: Recreate with extreme sharpness and cinematic realism.
+MANDATE: Output an IMAGE only. DO NOT provide any text, descriptions, or explanations. If you cannot generate the image, return a blank response.`;
+
+        const response = await retryOperation<GenerateContentResponse>(() => ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: imgData.mimeType, data: imgData.data } },
+                    { text: instructions }
+                ]
+            },
+            config: { safetySettings: SAFETY_SETTINGS }
+        }));
+
+        const candidate = response.candidates?.[0];
+        if (!candidate) throw new Error("No response candidates returned.");
+
+        if (candidate.content && candidate.content.parts) {
+            for (const part of candidate.content.parts) {
+                if (part.inlineData && part.inlineData.data) {
+                    return `data:image/png;base64,${part.inlineData.data}`;
+                }
+            }
+        }
+
+        const textResponse = candidate?.content?.parts?.[0]?.text;
+        if (textResponse) {
+            throw new Error(`Gemini refused: ${textResponse.substring(0, 200)}`);
+        }
+        throw new Error("No realized image generated.");
+
+    } catch (error) {
+        console.error("Gemini Realize Error:", error);
+        throw error;
+    }
+};
+
+
+/**
+ * Analyzes an image to extract its style, lighting, and aesthetic characteristics.
+ */
+

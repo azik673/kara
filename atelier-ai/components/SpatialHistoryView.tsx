@@ -1,7 +1,7 @@
 
 import React, { useRef, useState, useEffect, useMemo, memo } from 'react';
 import { HistoryState } from '../types';
-import { GitBranch, Trash2, AlertTriangle, Star } from 'lucide-react';
+import { GitBranch, Trash2, AlertTriangle, Star, Check } from 'lucide-react';
 
 interface SpatialHistoryViewProps {
     history: HistoryState[];
@@ -53,7 +53,7 @@ const HistoryNodeItem = memo(({
 
     return (
         <div
-            className="absolute w-[200px] h-[150px] bg-[#1a1a1a] border border-[#333] rounded-lg shadow-xl hover:border-fashion-accent hover:shadow-fashion-accent/20 transition-all group flex flex-col overflow-hidden will-change-transform history-node"
+            className="absolute w-[200px] h-[150px] bg-[#1a1a1a] border border-[#333] rounded-lg shadow-xl hover:border-white/50 hover:shadow-white/10 transition-all group flex flex-col overflow-hidden will-change-transform history-node"
             style={{
                 transform: `translate3d(${x}px, ${y}px, 0)`,
                 opacity: opacity,
@@ -78,7 +78,7 @@ const HistoryNodeItem = memo(({
                             onTogglePin(item.id);
                         }}
                         className={`p-1.5 rounded transition-colors ${item.isPinned
-                                ? 'text-fashion-accent hover:text-yellow-300'
+                                ? 'text-white hover:text-white/80'
                                 : 'text-gray-600 hover:text-gray-400'
                             }`}
                         title={item.isPinned ? "Unpin from active paths" : "Pin to active paths"}
@@ -105,6 +105,14 @@ const HistoryNodeItem = memo(({
                     </button>
                 </div>
             </div>
+            {isActive && (
+                <>
+                    <div className="absolute inset-0 border-2 border-white rounded-lg z-10 pointer-events-none" />
+                    <div className="absolute top-2 right-2 bg-fashion-accent text-white border border-white/20 px-2 py-1 rounded text-[10px] font-bold z-20 flex items-center gap-1 shadow-lg">
+                        <Check className="w-3 h-3" /> ACTIVE
+                    </div>
+                </>
+            )}
 
             {/* Thumbnail Area - Draggable for Forking */}
             <div

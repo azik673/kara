@@ -27,7 +27,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // This allows the user to erase their drawing without erasing the background photo.
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement>(null);
-  
+
   const [isDrawing, setIsDrawing] = useState(false);
   const [fgContext, setFgContext] = useState<CanvasRenderingContext2D | null>(null);
   const [bgContext, setBgContext] = useState<CanvasRenderingContext2D | null>(null);
@@ -40,7 +40,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       setCtx(ctx);
-      
+
       const dpr = window.devicePixelRatio || 1;
       // We rely on the parent container size. 
       // Ideally this should update on resize, but for now we init once on mount.
@@ -51,13 +51,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     if (bgCanvasRef.current) initCanvas(bgCanvasRef.current, setBgContext);
     if (fgCanvasRef.current) initCanvas(fgCanvasRef.current, setFgContext);
-    
+
   }, []);
 
   // Helper to combine layers and emit update
   const emitComposite = () => {
     if (!bgCanvasRef.current || !fgCanvasRef.current) return;
-    
+
     // Create a temp canvas to merge both
     const canvas = document.createElement('canvas');
     canvas.width = bgCanvasRef.current.width;
@@ -66,23 +66,23 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!ctx) return;
 
     if (mode === 'mask') {
-        // MASK MODE: Output Black Background + White Strokes (FG)
-        // We ignore the BG image in the output, as it's just for reference.
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw FG
-        ctx.drawImage(fgCanvasRef.current, 0, 0);
+      // MASK MODE: Output Black Background + White Strokes (FG)
+      // We ignore the BG image in the output, as it's just for reference.
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw FG
+      ctx.drawImage(fgCanvasRef.current, 0, 0);
     } else {
-        // DEFAULT MODE: WYSIWYG Composite
-        // Fill white background (good for transparent PNG export)
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-        // Draw BG
-        ctx.drawImage(bgCanvasRef.current, 0, 0);
-        // Draw FG
-        ctx.drawImage(fgCanvasRef.current, 0, 0);
+      // DEFAULT MODE: WYSIWYG Composite
+      // Fill white background (good for transparent PNG export)
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw BG
+      ctx.drawImage(bgCanvasRef.current, 0, 0);
+      // Draw FG
+      ctx.drawImage(fgCanvasRef.current, 0, 0);
     }
 
     onCanvasUpdate(canvas.toDataURL('image/png'));
@@ -100,28 +100,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       img.onload = () => {
         // Clear bg canvas
         ctx.clearRect(0, 0, canvas.width / ctx.getTransform().a, canvas.height / ctx.getTransform().d); // Clear using logic size
-        
+
         const dpr = window.devicePixelRatio || 1;
         const canvasWidth = canvas.width / dpr;
         const canvasHeight = canvas.height / dpr;
-        
+
         const scale = Math.min(canvasWidth / img.width, canvasHeight / img.height);
         const x = (canvasWidth / 2) - (img.width / 2) * scale;
         const y = (canvasHeight / 2) - (img.height / 2) * scale;
-        
+
         ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
-        
+
         // Clear FG canvas when a NEW background is loaded (fresh start)
         if (fgCanvasRef.current && fgContext) {
-            fgContext.clearRect(0,0, fgCanvasRef.current.width, fgCanvasRef.current.height);
+          fgContext.clearRect(0, 0, fgCanvasRef.current.width, fgCanvasRef.current.height);
         }
 
         emitComposite();
       };
     } else {
-       // No background image, clear
-       ctx.clearRect(0, 0, canvas.width, canvas.height);
-       emitComposite();
+      // No background image, clear
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      emitComposite();
     }
   }, [backgroundImage, bgContext, mode]); // Re-run if mode changes
 
@@ -137,7 +137,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       const dpr = window.devicePixelRatio || 1;
       const canvasWidth = canvas.width / dpr;
       const canvasHeight = canvas.height / dpr;
-      
+
       const scale = Math.min((canvasWidth * 0.5) / img.width, (canvasHeight * 0.5) / img.height);
       const finalScale = scale < 1 ? scale : 1;
 
@@ -150,7 +150,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.globalCompositeOperation = 'source-over';
       ctx.drawImage(img, x, y, w, h);
       ctx.globalCompositeOperation = prevOp;
-      
+
       emitComposite();
       onOverlayProcessed();
     };
@@ -159,30 +159,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // Configure Brush
   useEffect(() => {
     if (!fgContext) return;
-    
+
     if (tool === ToolType.MARKER) {
-       fgContext.strokeStyle = brushSettings.color;
-       fgContext.lineWidth = brushSettings.size * 2;
-       fgContext.globalAlpha = 0.5; 
-       fgContext.globalCompositeOperation = 'source-over';
-    } else if (tool === ToolType.ERASER) {
-       fgContext.lineWidth = brushSettings.size;
-       fgContext.globalAlpha = 1;
-       // Eraser simply clears the FG layer
-       fgContext.globalCompositeOperation = 'destination-out'; 
+      fgContext.strokeStyle = brushSettings.color;
+      fgContext.lineWidth = brushSettings.size * 2;
+      fgContext.globalAlpha = 0.5;
+      fgContext.globalCompositeOperation = 'source-over';
+
     } else {
-       // BRUSH
-       fgContext.strokeStyle = brushSettings.color;
-       fgContext.lineWidth = brushSettings.size;
-       fgContext.globalAlpha = brushSettings.opacity;
-       fgContext.globalCompositeOperation = 'source-over';
+      // BRUSH
+      fgContext.strokeStyle = brushSettings.color;
+      fgContext.lineWidth = brushSettings.size;
+      fgContext.globalAlpha = brushSettings.opacity;
+      fgContext.globalCompositeOperation = 'source-over';
     }
   }, [brushSettings, tool, fgContext]);
 
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (tool === ToolType.MOVE) return; 
+    if (tool === ToolType.MOVE) return;
     if (!fgContext) return;
-    
+
     setIsDrawing(true);
     const { offsetX, offsetY } = getCoordinates(e);
     fgContext.beginPath();
@@ -201,12 +197,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!isDrawing || !fgContext) return;
     fgContext.closePath();
     setIsDrawing(false);
-    emitComposite(); 
+    emitComposite();
   };
 
   const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
     if (!fgCanvasRef.current) return { offsetX: 0, offsetY: 0 };
-    
+
     const canvas = fgCanvasRef.current;
     const rect = canvas.getBoundingClientRect();
 
@@ -230,7 +226,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   const getCursorStyle = () => {
     if (tool === ToolType.MOVE) return 'cursor-grab';
-    if (tool === ToolType.ERASER) return 'cursor-cell'; 
+
     return 'cursor-crosshair';
   };
 
@@ -242,7 +238,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         className="absolute inset-0 w-full h-full pointer-events-none"
         style={{ zIndex: 0 }}
       />
-      
+
       {/* Foreground Layer (Interactive) */}
       <canvas
         ref={fgCanvasRef}

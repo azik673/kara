@@ -19,15 +19,27 @@ interface GraphCanvasProps {
     onNodeMouseDown: (e: React.MouseEvent, id: string) => void;
     onToggleGroup: (groupId: string) => void;
     onSaveGroup?: (groupId: string) => void;
-    onUpdateNodeData?: (id: string, data: any) => void; // Added prop
+    onUpdateNodeData?: (id: string, data: any) => void;
     onCompare?: (nodeId: string) => void;
     comparisonBaseId?: string | null;
+    onRegenerateNode?: (nodeId: string) => void;
+    onExportImage?: (imageUrl: string) => void;
+    onEditorToggle?: (isOpen: boolean) => void;
+    isEditorOpen?: boolean;
+    onDeleteNodes?: () => void;
+    onUndo?: () => void;
+    onRedo?: () => void;
+    onCopyNodes?: () => void;
+    onCutNodes?: () => void;
+    onPasteNodes?: () => void;
+    onPushHistory?: (nodes: Node[], edges: Edge[]) => void;
 }
 
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     nodes, edges, setNodes, setEdges, selectedNodeIds, setSelectedNodeIds,
     zoom, setZoom, pan, setPan, onLoopback, onNodeMouseDown, onToggleGroup, onSaveGroup, onUpdateNodeData,
-    onCompare, comparisonBaseId
+    onCompare, comparisonBaseId, onRegenerateNode, onExportImage, onEditorToggle, isEditorOpen, onDeleteNodes,
+    onUndo, onRedo, onCopyNodes, onCutNodes, onPasteNodes, onPushHistory
 }) => {
     const [isPanning, setIsPanning] = useState(false);
     const [isDraggingNode, setIsDraggingNode] = useState<string | null>(null);
@@ -42,11 +54,73 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     const containerRef = useRef<HTMLDivElement>(null);
     const lastMousePos = useRef({ x: 0, y: 0 });
     const panStartPos = useRef({ x: 0, y: 0 }); // To detect clicks vs drags
+    const beforeStateRef = useRef<{ nodes: Node[], edges: Edge[] } | null>(null);
+    const hasMovedRef = useRef(false);
+
+    const getNodeHeight = (n: Node) => {
+        if (n.data.height) return n.data.height;
+        const w = n.data.width || (n.type === 'mask_editor' || n.type === 'group' ? 400 : 256);
+        
+        // Match NodeBlock.tsx rendering logic
+        if (n.type === 'image_source' || n.type === 'output_result') {
+            const hasImage = n.data.result || n.data.params.image;
+            // py-3 (24px) + image container (w or 160)
+            return hasImage ? w + 24 : 160;
+        }
+        if (n.type === 'input_prompt') return 88; // py-3 (24) + h-16 (64)
+        if (n.type === 'ai_generator') {
+            // h-8 header (32) + py-3 (24) + (result ? w : h-24 (96))
+            return 56 + (n.data.result ? w : 96);
+        }
+        return 200;
+    };
 
     // Track Spacebar for Panning Mode
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.code === 'Space' && !e.repeat) setIsSpacePressed(true);
+            
+            // Handle Delete/Backspace for node deletion
+            if ((e.key === 'Delete' || e.key === 'Backspace') && !isEditorOpen) {
+                // Check if we're not in an input field
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                    return;
+                }
+                
+                if (onDeleteNodes) {
+                    onDeleteNodes();
+                }
+            }
+
+            // Handle Undo/Redo
+            if ((e.ctrlKey || e.metaKey) && !isEditorOpen) {
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                    return;
+                }
+
+                if (e.key.toLowerCase() === 'z') {
+                    if (e.shiftKey) {
+                        if (onRedo) onRedo();
+                    } else {
+                        if (onUndo) onUndo();
+                    }
+                    e.preventDefault();
+                } else if (e.key.toLowerCase() === 'y') {
+                    if (onRedo) onRedo();
+                    e.preventDefault();
+                } else if (e.key.toLowerCase() === 'c') {
+                    if (onCopyNodes) onCopyNodes();
+                    e.preventDefault();
+                } else if (e.key.toLowerCase() === 'x') {
+                    if (onCutNodes) onCutNodes();
+                    e.preventDefault();
+                } else if (e.key.toLowerCase() === 'v') {
+                    if (onPasteNodes) onPasteNodes();
+                    e.preventDefault();
+                }
+            }
         };
         const handleKeyUp = (e: KeyboardEvent) => {
             if (e.code === 'Space') setIsSpacePressed(false);
@@ -57,7 +131,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
         };
-    }, []);
+    }, [isEditorOpen, onDeleteNodes, onUndo, onRedo, onCopyNodes, onCutNodes, onPasteNodes]);
 
     // --- Coords Helper ---
     const screenToWorld = (x: number, y: number) => {
@@ -71,6 +145,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
     // --- Mouse Handlers ---
     const handleMouseDown = (e: React.MouseEvent) => {
+        if (isEditorOpen) return;
         // 1. Left Mouse (0) or Middle Mouse (1): Pan
         if (e.button === 0 || e.button === 1) {
             setIsPanning(true);
@@ -107,6 +182,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
         // 3. Handle Node Dragging
         if (isDraggingNode) {
+            hasMovedRef.current = true;
             const worldDx = dx / zoom;
             const worldDy = dy / zoom;
 
@@ -190,23 +266,50 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
             return;
         }
 
+        if (isDraggingNode && hasMovedRef.current && beforeStateRef.current && onPushHistory) {
+            onPushHistory(beforeStateRef.current.nodes, beforeStateRef.current.edges);
+        }
+
         setIsDraggingNode(null);
+        beforeStateRef.current = null;
+        hasMovedRef.current = false;
 
         if (connecting) setConnecting(null);
     };
 
     const handleWheel = (e: React.WheelEvent) => {
+        if (isEditorOpen || !containerRef.current) return;
+        
+        const rect = containerRef.current.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // World coordinates of mouse before zoom
+        const worldX = (mouseX - pan.x) / zoom;
+        const worldY = (mouseY - pan.y) / zoom;
+
         const s = e.deltaY > 0 ? 0.9 : 1.1;
-        const newZoom = Math.min(Math.max(zoom * s, 0.2), 5);
+        const newZoom = Math.min(Math.max(zoom * s, 0.05), 20);
+        
+        // New pan to keep worldX, worldY at the same mouseX, mouseY
+        const newPanX = mouseX - worldX * newZoom;
+        const newPanY = mouseY - worldY * newZoom;
+
         setZoom(newZoom);
+        setPan({ x: newPanX, y: newPanY });
     };
 
     // --- Node Interaction ---
     const handleNodeMouseDown = (e: React.MouseEvent, id: string) => {
+        if (isEditorOpen) return;
+        const node = nodes.find(n => n.id === id);
+        if (node?.data.isLocked) return;
         e.stopPropagation();
         onNodeMouseDown(e, id); // Delegate selection logic to App
         setIsDraggingNode(id);
         lastMousePos.current = { x: e.clientX, y: e.clientY };
+        hasMovedRef.current = false;
+        beforeStateRef.current = { nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) };
     };
 
     // --- PROPORTIONAL SCALING LOGIC ---
@@ -288,6 +391,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 target: connecting.isInput ? connecting.nodeId : targetNodeId,
                 targetHandle: connecting.isInput ? connecting.handle : targetHandleId
             };
+            if (onPushHistory) onPushHistory(nodes, edges);
             setEdges(prev => [...prev, newEdge]);
         }
         setConnecting(null);
@@ -302,10 +406,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
     const handleNodeParamsUpdate = (id: string, params: any) => {
         if (onUpdateNodeData) {
-            const node = nodes.find(n => n.id === id);
-            if (node) {
-                onUpdateNodeData(id, { ...node.data, params });
-            }
+            onUpdateNodeData(id, { data: { params } });
         }
     };
 
@@ -323,12 +424,11 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
         >
             {/* Grid Pattern */}
             <div
-                className="absolute inset-0 pointer-events-none opacity-20"
+                className="absolute inset-0 pointer-events-none opacity-[0.15]"
                 style={{
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                    backgroundImage: 'radial-gradient(#555 1px, transparent 1px)',
-                    backgroundSize: '30px 30px',
-                    transformOrigin: '0 0'
+                    backgroundImage: `radial-gradient(circle, #ffffff ${1.5 * zoom}px, transparent ${1.5 * zoom}px)`,
+                    backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
+                    backgroundPosition: `${pan.x}px ${pan.y}px`
                 }}
             />
 
@@ -350,11 +450,16 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                         if (!src || !tgt) return null;
 
                         const srcWidth = src.data.width || (src.type === 'mask_editor' || src.type === 'group' ? 400 : 256);
+                        const srcHeight = getNodeHeight(src);
+                        const tgtHeight = getNodeHeight(tgt);
 
-                        const sx = src.position.x + srcWidth;
-                        const sy = src.position.y + 60;
-                        const tx = tgt.position.x;
-                        const ty = tgt.position.y + 60;
+                        // Align with center of port circles
+                        // Horizontal: 32px offset from node edge (matches NodeBlock.tsx translate-x-[32px])
+                        // Vertical: Center of glass-node body (which starts at node.position.y)
+                        const sx = src.position.x + srcWidth + 32;
+                        const sy = src.position.y + srcHeight / 2;
+                        const tx = tgt.position.x - 32;
+                        const ty = tgt.position.y + tgtHeight / 2;
 
                         const dist = Math.abs(tx - sx) / 2;
                         const path = `M ${sx},${sy} C ${sx + dist},${sy} ${tx - dist},${ty} ${tx},${ty}`;
@@ -364,7 +469,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                         return (
                             <g key={edge.id} className={isSelected ? "opacity-100" : "opacity-0 transition-opacity duration-200"}>
                                 <path d={path} stroke={isSelected ? "#777" : "#555"} strokeWidth="3" fill="none" />
-                                <path d={path} stroke="#d4af37" strokeWidth="1.5" fill="none" className={isSelected ? "" : "hidden"} />
+                                <path d={path} stroke="#888" strokeWidth="1.5" fill="none" className={isSelected ? "" : "hidden"} />
                             </g>
                         );
                     })}
@@ -374,12 +479,14 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                         if (!startNode) return null;
 
                         const startWidth = startNode.data.width || (startNode.type === 'mask_editor' || startNode.type === 'group' ? 400 : 256);
-                        const sx = startNode.position.x + startWidth;
-                        const sy = startNode.position.y + 60;
+                        const startHeight = getNodeHeight(startNode);
+
+                        const sx = startNode.position.x + startWidth + 32;
+                        const sy = startNode.position.y + startHeight / 2;
                         const m = screenToWorld(connecting.x, connecting.y);
 
                         const path = `M ${sx},${sy} L ${m.x},${m.y}`;
-                        return <path d={path} stroke="#d4af37" strokeWidth="2" strokeDasharray="5,5" fill="none" />;
+                        return <path d={path} stroke="#888" strokeWidth="2" strokeDasharray="5,5" fill="none" />;
                     })()}
                 </svg>
 
@@ -399,11 +506,19 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                                 onPortMouseUp={handlePortMouseUp}
                                 onLoopback={onLoopback}
                                 onResize={handleNodeResize}
+                                onResizeStart={() => {
+                                    hasMovedRef.current = true;
+                                    beforeStateRef.current = { nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) };
+                                }}
                                 onToggleGroup={onToggleGroup}
                                 onSaveGroup={onSaveGroup}
                                 onUpdateNodeParams={handleNodeParamsUpdate}
                                 onCompare={onCompare}
                                 isComparisonBase={comparisonBaseId === node.id}
+                                onRegenerateNode={onRegenerateNode}
+                                onExportImage={onExportImage}
+                                onEditorToggle={onEditorToggle}
+                                onUpdateNodeData={onUpdateNodeData}
                             />
                         </div>
                     );
