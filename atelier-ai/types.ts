@@ -127,11 +127,56 @@ export interface Layer {
   name?: string;
   type?: 'layer' | 'group';
   parentId?: string | null;
+  parentId?: string | null;
   collapsed?: boolean;
-
+  hue?: number;
+  saturation?: number;
+  brightness?: number;
+  contrast?: number;
+  exposure?: number;
+  gamma?: number;
+  levels?: {
+    inputBlack: number;
+    inputWhite: number;
+    gamma: number;
+    outputBlack: number;
+    outputWhite: number;
+  };
+  curves?: {
+    master: { x: number; y: number }[];
+    red: { x: number; y: number }[];
+    green: { x: number; y: number }[];
+    blue: { x: number; y: number }[];
+  };
+  blur?: number; // 0-1
+  noise?: number; // 0-100
+  sharpen?: number; // 0-1
+  colorBalance?: {
+    shadows: [number, number, number]; // [cyan-red, magenta-green, yellow-blue]
+    midtones: [number, number, number];
+    highlights: [number, number, number];
+    preserveLuminosity: boolean;
+  };
+  selectiveColor?: {
+    reds?: { cyan: number; magenta: number; yellow: number; black: number; };
+    yellows?: { cyan: number; magenta: number; yellow: number; black: number; };
+    greens?: { cyan: number; magenta: number; yellow: number; black: number; };
+    cyans?: { cyan: number; magenta: number; yellow: number; black: number; };
+    blues?: { cyan: number; magenta: number; yellow: number; black: number; };
+    magentas?: { cyan: number; magenta: number; yellow: number; black: number; };
+    whites?: { cyan: number; magenta: number; yellow: number; black: number; };
+    neutrals?: { cyan: number; magenta: number; yellow: number; black: number; };
+    blacks?: { cyan: number; magenta: number; yellow: number; black: number; };
+    relative?: boolean;
+  };
+  gradientMap?: {
+    enabled: boolean;
+    stops: { id: string; offset: number; color: string }[];
+    opacity: number;
+  };
 }
 
-export type ActiveTool = 'move' | 'hand' | 'zoom' | 'brush' | 'eraser' | 'crop' | 'expand' | 'style_transfer';
+export type ActiveTool = 'move' | 'hand' | 'zoom' | 'brush' | 'eraser' | 'crop' | 'expand' | 'style_transfer' | 'color_adjust' | 'transformation';
 
 export interface ExportedImage {
   id: string;

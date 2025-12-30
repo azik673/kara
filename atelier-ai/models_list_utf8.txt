@@ -1,0 +1,105 @@
+﻿[dotenv@17.2.3] injecting env (1) from .env.local -- tip: тЪЩя╕П  suppress all logs with { quiet: true }
+Using API Key: AIza...
+Fetching available models via REST API...
+
+Available Models:
+- models/embedding-gecko-001
+  Methods: embedText, countTextTokens
+- models/gemini-2.5-flash
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.5-pro
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-exp
+  Methods: generateContent, countTokens, bidiGenerateContent
+- models/gemini-2.0-flash
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-001
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-exp-image-generation
+  Methods: generateContent, countTokens, bidiGenerateContent
+- models/gemini-2.0-flash-lite-001
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-lite
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-lite-preview-02-05
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.0-flash-lite-preview
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-exp-1206
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.5-flash-preview-tts
+  Methods: countTokens, generateContent
+- models/gemini-2.5-pro-preview-tts
+  Methods: countTokens, generateContent, batchGenerateContent
+- models/gemma-3-1b-it
+  Methods: generateContent, countTokens
+- models/gemma-3-4b-it
+  Methods: generateContent, countTokens
+- models/gemma-3-12b-it
+  Methods: generateContent, countTokens
+- models/gemma-3-27b-it
+  Methods: generateContent, countTokens
+- models/gemma-3n-e4b-it
+  Methods: generateContent, countTokens
+- models/gemma-3n-e2b-it
+  Methods: generateContent, countTokens
+- models/gemini-flash-latest
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-flash-lite-latest
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-pro-latest
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.5-flash-lite
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.5-flash-image-preview
+  Methods: generateContent, countTokens, batchGenerateContent
+- models/gemini-2.5-flash-image
+  Methods: generateContent, countTokens, batchGenerateContent
+- models/gemini-2.5-flash-preview-09-2025
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-2.5-flash-lite-preview-09-2025
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-3-pro-preview
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-3-flash-preview
+  Methods: generateContent, countTokens, createCachedContent, batchGenerateContent
+- models/gemini-3-pro-image-preview
+  Methods: generateContent, countTokens, batchGenerateContent
+- models/nano-banana-pro-preview
+  Methods: generateContent, countTokens, batchGenerateContent
+- models/gemini-robotics-er-1.5-preview
+  Methods: generateContent, countTokens
+- models/gemini-2.5-computer-use-preview-10-2025
+  Methods: generateContent, countTokens
+- models/deep-research-pro-preview-12-2025
+  Methods: generateContent, countTokens
+- models/embedding-001
+  Methods: embedContent
+- models/text-embedding-004
+  Methods: embedContent
+- models/gemini-embedding-exp-03-07
+  Methods: embedContent, countTextTokens, countTokens
+- models/gemini-embedding-exp
+  Methods: embedContent, countTextTokens, countTokens
+- models/gemini-embedding-001
+  Methods: embedContent, countTextTokens, countTokens, asyncBatchEmbedContent
+- models/aqa
+  Methods: generateAnswer
+- models/imagen-4.0-generate-preview-06-06
+  Methods: predict
+- models/imagen-4.0-ultra-generate-preview-06-06
+  Methods: predict
+- models/imagen-4.0-generate-001
+  Methods: predict
+- models/imagen-4.0-ultra-generate-001
+  Methods: predict
+- models/imagen-4.0-fast-generate-001
+  Methods: predict
+- models/veo-2.0-generate-001
+  Methods: predictLongRunning
+- models/veo-3.0-generate-001
+  Methods: predictLongRunning
+- models/veo-3.0-fast-generate-001
+  Methods: predictLongRunning
+- models/veo-3.1-generate-preview
+  Methods: predictLongRunning
